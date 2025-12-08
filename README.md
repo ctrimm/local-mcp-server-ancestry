@@ -272,6 +272,38 @@ Generate a rich historical narrative from GEDCOM data.
 }
 ```
 
+#### `gedcom_relationship_explainer`
+Calculate and explain the relationship between two people with a narrative description.
+
+```json
+{
+  "person1Id": "@I123@",
+  "person2Id": "@I456@"
+}
+```
+
+**Output includes:**
+- Relationship type (parent, child, sibling, cousin, etc.)
+- Degree of separation
+- Connection path showing how they're related
+- Narrative explanation
+
+#### `gedcom_life_summary`
+Generate a life summary in different narrative styles.
+
+```json
+{
+  "individualId": "@I123@",
+  "style": "brief"
+}
+```
+
+**Available styles:**
+- **brief**: 1-2 paragraph summary with key facts
+- **detailed**: Comprehensive summary organized by life phases (Early Life, Life Events, Later Life)
+- **chronological**: Timeline-focused view with ages at each event
+- **thematic**: Organized by themes (Origins, Family, Migration, Occupation & Service, Later Life)
+
 ## How to Export GEDCOM from Ancestry.com
 
 1. Log in to Ancestry.com
@@ -294,6 +326,9 @@ Once configured, you can use natural language:
 "Search for John Smith in the GEDCOM"
 "Get the ancestors of @I123@"
 "Create a narrative about @I123@'s life"
+"How are @I123@ and @I456@ related?"
+"Give me a brief summary of @I123@'s life"
+"Show me a chronological timeline for @I123@"
 ```
 
 **Using Ancestry.com web scraping:**

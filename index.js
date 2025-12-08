@@ -437,6 +437,43 @@ class AncestryMCPServer {
             required: ['individualId'],
           },
         },
+        {
+          name: 'gedcom_relationship_explainer',
+          description: 'Calculate and explain the relationship between two people in the GEDCOM file with a narrative description',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              person1Id: {
+                type: 'string',
+                description: 'The GEDCOM individual ID of the first person',
+              },
+              person2Id: {
+                type: 'string',
+                description: 'The GEDCOM individual ID of the second person',
+              },
+            },
+            required: ['person1Id', 'person2Id'],
+          },
+        },
+        {
+          name: 'gedcom_life_summary',
+          description: 'Generate a life summary for a person in different narrative styles (brief, detailed, chronological, thematic)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+              style: {
+                type: 'string',
+                description: 'Narrative style: "brief" (1-2 paragraphs), "detailed" (comprehensive), "chronological" (timeline-focused), "thematic" (organized by life themes)',
+                enum: ['brief', 'detailed', 'chronological', 'thematic'],
+              },
+            },
+            required: ['individualId', 'style'],
+          },
+        },
       ],
     }));
 
@@ -487,6 +524,12 @@ class AncestryMCPServer {
 
           case 'gedcom_generate_narrative':
             return await this.gedcomGenerateNarrative(args);
+
+          case 'gedcom_relationship_explainer':
+            return await this.gedcomRelationshipExplainer(args.person1Id, args.person2Id);
+
+          case 'gedcom_life_summary':
+            return await this.gedcomLifeSummary(args.individualId, args.style);
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -1778,6 +1821,515 @@ class AncestryMCPServer {
       includeWorldEvents,
       includeRegionalHistory,
     });
+  }
+
+  /**
+   * Calculate and explain relationship between two people
+   */
+  async gedcomRelationshipExplainer(person1Id, person2Id) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const person1 = this.gedcomIndex.individuals.get(person1Id);
+    const person2 = this.gedcomIndex.individuals.get(person2Id);
+
+    if (!person1) throw new Error(`Individual ${person1Id} not found.`);
+    if (!person2) throw new Error(`Individual ${person2Id} not found.`);
+
+    const name1 = this.extractName(person1);
+    const name2 = this.extractName(person2);
+
+    // Find relationship using BFS
+    const relationship = this.findRelationship(person1Id, person2Id);
+
+    if (!relationship) {
+      return {
+        content: [{
+          type: 'text',
+          text: `No direct genealogical relationship found between ${name1} and ${name2}.\n\nThey may be related through marriage or more distant connections not captured in the current search depth.`,
+        }],
+      };
+    }
+
+    // Build narrative explanation
+    let narrative = `Relationship between ${name1} and ${name2}:\n\n`;
+    narrative += `**Relationship:** ${relationship.description}\n`;
+    narrative += `**Degree of Separation:** ${relationship.distance} generation(s)\n\n`;
+    narrative += `**Connection Path:**\n${relationship.path}\n\n`;
+    narrative += `**Narrative:**\n${relationship.narrative}`;
+
+    return {
+      content: [{
+        type: 'text',
+        text: narrative,
+      }],
+    };
+  }
+
+  /**
+   * Find relationship between two people using BFS
+   */
+  findRelationship(startId, targetId) {
+    if (startId === targetId) {
+      return {
+        description: 'Same person',
+        distance: 0,
+        path: 'They are the same individual.',
+        narrative: 'These two records refer to the same person.',
+      };
+    }
+
+    const queue = [{ id: startId, path: [startId], directions: [] }];
+    const visited = new Set([startId]);
+    const maxDepth = 10; // Limit search depth
+
+    while (queue.length > 0) {
+      const { id, path, directions } = queue.shift();
+
+      if (path.length > maxDepth) continue;
+
+      const individual = this.gedcomIndex.individuals.get(id);
+      if (!individual) continue;
+
+      // Get all related people (parents, children, spouses)
+      const relatives = this.getRelatives(id);
+
+      for (const relative of relatives) {
+        if (relative.id === targetId) {
+          // Found the target!
+          const fullPath = [...path, targetId];
+          const fullDirections = [...directions, relative.relation];
+          return this.describeRelationship(fullPath, fullDirections);
+        }
+
+        if (!visited.has(relative.id)) {
+          visited.add(relative.id);
+          queue.push({
+            id: relative.id,
+            path: [...path, relative.id],
+            directions: [...directions, relative.relation],
+          });
+        }
+      }
+    }
+
+    return null; // No relationship found
+  }
+
+  /**
+   * Get all relatives of a person (parents, children, spouses)
+   */
+  getRelatives(individualId) {
+    const individual = this.gedcomIndex.individuals.get(individualId);
+    if (!individual) return [];
+
+    const relatives = [];
+
+    // Get parents
+    const famcTag = individual.children?.find(c => c.tag === 'FAMC');
+    if (famcTag) {
+      const parentFamily = this.gedcomIndex.families.get(famcTag.data);
+      if (parentFamily) {
+        const husbTag = parentFamily.children?.find(c => c.tag === 'HUSB');
+        const wifeTag = parentFamily.children?.find(c => c.tag === 'WIFE');
+
+        if (husbTag) relatives.push({ id: husbTag.data, relation: 'parent' });
+        if (wifeTag) relatives.push({ id: wifeTag.data, relation: 'parent' });
+      }
+    }
+
+    // Get children and spouses
+    const famsTags = individual.children?.filter(c => c.tag === 'FAMS') || [];
+    for (const famsTag of famsTags) {
+      const family = this.gedcomIndex.families.get(famsTag.data);
+      if (!family) continue;
+
+      // Get spouse
+      const husbTag = family.children?.find(c => c.tag === 'HUSB');
+      const wifeTag = family.children?.find(c => c.tag === 'WIFE');
+
+      if (husbTag && husbTag.data !== individualId) {
+        relatives.push({ id: husbTag.data, relation: 'spouse' });
+      }
+      if (wifeTag && wifeTag.data !== individualId) {
+        relatives.push({ id: wifeTag.data, relation: 'spouse' });
+      }
+
+      // Get children
+      const childTags = family.children?.filter(c => c.tag === 'CHIL') || [];
+      for (const childTag of childTags) {
+        relatives.push({ id: childTag.data, relation: 'child' });
+      }
+    }
+
+    return relatives;
+  }
+
+  /**
+   * Describe relationship based on path
+   */
+  describeRelationship(path, directions) {
+    const distance = directions.length;
+    let description = '';
+    let narrative = '';
+    let pathDescription = '';
+
+    // Build path description
+    for (let i = 0; i < path.length; i++) {
+      const person = this.gedcomIndex.individuals.get(path[i]);
+      const name = person ? this.extractName(person) : path[i];
+
+      if (i === 0) {
+        pathDescription += `1. ${name} (starting person)\n`;
+      } else {
+        const relation = directions[i - 1];
+        pathDescription += `${i + 1}. ${name} (${relation})\n`;
+      }
+    }
+
+    // Determine relationship type
+    const person1Name = this.extractName(this.gedcomIndex.individuals.get(path[0]));
+    const person2Name = this.extractName(this.gedcomIndex.individuals.get(path[path.length - 1]));
+
+    // Simple relationships
+    if (distance === 1) {
+      if (directions[0] === 'parent') {
+        description = 'Parent';
+        narrative = `${person2Name} is the parent of ${person1Name}.`;
+      } else if (directions[0] === 'child') {
+        description = 'Child';
+        narrative = `${person2Name} is the child of ${person1Name}.`;
+      } else if (directions[0] === 'spouse') {
+        description = 'Spouse';
+        narrative = `${person1Name} and ${person2Name} are married to each other.`;
+      }
+    }
+    // Grandparent/grandchild
+    else if (distance === 2 && directions.every(d => d === 'parent')) {
+      description = 'Grandparent';
+      narrative = `${person2Name} is the grandparent of ${person1Name}.`;
+    } else if (distance === 2 && directions.every(d => d === 'child')) {
+      description = 'Grandchild';
+      narrative = `${person2Name} is the grandchild of ${person1Name}.`;
+    }
+    // Siblings
+    else if (distance === 2 && directions[0] === 'parent' && directions[1] === 'child') {
+      description = 'Sibling';
+      narrative = `${person1Name} and ${person2Name} are siblings, sharing the same parent.`;
+    }
+    // Great-grandparent
+    else if (distance === 3 && directions.every(d => d === 'parent')) {
+      description = 'Great-grandparent';
+      narrative = `${person2Name} is the great-grandparent of ${person1Name}.`;
+    }
+    // Aunt/Uncle
+    else if (distance === 3 && directions[0] === 'parent' && directions[1] === 'parent' && directions[2] === 'child') {
+      description = 'Aunt/Uncle';
+      narrative = `${person2Name} is the aunt or uncle of ${person1Name}.`;
+    }
+    // Niece/Nephew
+    else if (distance === 3 && directions[0] === 'child' && directions[1] === 'child' && directions[2] === 'parent') {
+      description = 'Niece/Nephew';
+      narrative = `${person2Name} is the niece or nephew of ${person1Name}.`;
+    }
+    // Cousin
+    else if (distance === 4 && directions[0] === 'parent' && directions[1] === 'parent' && directions[2] === 'child' && directions[3] === 'child') {
+      description = 'First cousin';
+      narrative = `${person1Name} and ${person2Name} are first cousins, sharing the same grandparent.`;
+    }
+    // In-law relationships
+    else if (directions.includes('spouse')) {
+      description = 'Related by marriage';
+      narrative = `${person1Name} and ${person2Name} are related through marriage.`;
+    }
+    // Complex/distant
+    else {
+      description = `Distant relative (${distance} degrees of separation)`;
+      narrative = `${person1Name} and ${person2Name} are related through ${distance} generations.`;
+    }
+
+    return {
+      description,
+      distance,
+      path: pathDescription,
+      narrative,
+    };
+  }
+
+  /**
+   * Generate life summary in different styles
+   */
+  async gedcomLifeSummary(individualId, style) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individual = this.gedcomIndex.individuals.get(individualId);
+    if (!individual) {
+      throw new Error(`Individual ${individualId} not found.`);
+    }
+
+    const name = this.extractName(individual);
+    const events = this.extractEvents(individual);
+    const birthEvent = events.find(e => e.type === 'Birth');
+    const deathEvent = events.find(e => e.type === 'Death');
+
+    let summary = '';
+
+    switch (style) {
+      case 'brief':
+        summary = this.generateBriefSummary(name, birthEvent, deathEvent, events);
+        break;
+      case 'detailed':
+        summary = this.generateDetailedSummary(name, birthEvent, deathEvent, events, individualId);
+        break;
+      case 'chronological':
+        summary = this.generateChronologicalSummary(name, birthEvent, deathEvent, events);
+        break;
+      case 'thematic':
+        summary = this.generateThematicSummary(name, birthEvent, deathEvent, events);
+        break;
+      default:
+        throw new Error(`Unknown style: ${style}`);
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: summary,
+      }],
+    };
+  }
+
+  /**
+   * Generate brief summary (1-2 paragraphs)
+   */
+  generateBriefSummary(name, birthEvent, deathEvent, events) {
+    let summary = `# ${name}\n\n`;
+
+    const birthInfo = birthEvent ? `born ${birthEvent.date}${birthEvent.location ? ` in ${birthEvent.location}` : ''}` : 'birth details unknown';
+    const deathInfo = deathEvent ? `died ${deathEvent.date}${deathEvent.location ? ` in ${deathEvent.location}` : ''}` : 'death details unknown';
+
+    summary += `${name} was ${birthInfo} and ${deathInfo}.`;
+
+    // Calculate lifespan if both dates available
+    if (birthEvent?.date && deathEvent?.date) {
+      const birthYear = this.extractYear(birthEvent.date);
+      const deathYear = this.extractYear(deathEvent.date);
+      if (birthYear && deathYear) {
+        const lifespan = deathYear - birthYear;
+        summary += ` They lived for approximately ${lifespan} years.`;
+      }
+    }
+
+    // Mention key events
+    const significantEvents = events.filter(e =>
+      ['Marriage', 'Immigration', 'Emigration', 'Military', 'Occupation'].includes(e.type)
+    );
+
+    if (significantEvents.length > 0) {
+      summary += `\n\nNotable life events include: `;
+      summary += significantEvents.map(e => {
+        let desc = e.type.toLowerCase();
+        if (e.date) desc += ` in ${this.extractYear(e.date) || e.date}`;
+        return desc;
+      }).join(', ') + '.';
+    }
+
+    return summary;
+  }
+
+  /**
+   * Generate detailed summary
+   */
+  generateDetailedSummary(name, birthEvent, deathEvent, events, individualId) {
+    let summary = `# ${name} - Detailed Life Summary\n\n`;
+
+    // Birth information
+    summary += `## Early Life\n\n`;
+    if (birthEvent) {
+      summary += `${name} was born`;
+      if (birthEvent.date) summary += ` on ${birthEvent.date}`;
+      if (birthEvent.location) summary += ` in ${birthEvent.location}`;
+      summary += `.`;
+    } else {
+      summary += `Birth details for ${name} are not recorded.`;
+    }
+
+    // Get family context
+    const individual = this.gedcomIndex.individuals.get(individualId);
+    const famcTag = individual.children?.find(c => c.tag === 'FAMC');
+    if (famcTag) {
+      const parentFamily = this.gedcomIndex.families.get(famcTag.data);
+      if (parentFamily) {
+        const parents = [];
+        const husbTag = parentFamily.children?.find(c => c.tag === 'HUSB');
+        const wifeTag = parentFamily.children?.find(c => c.tag === 'WIFE');
+
+        if (husbTag) {
+          const father = this.gedcomIndex.individuals.get(husbTag.data);
+          if (father) parents.push(`father ${this.extractName(father)}`);
+        }
+        if (wifeTag) {
+          const mother = this.gedcomIndex.individuals.get(wifeTag.data);
+          if (mother) parents.push(`mother ${this.extractName(mother)}`);
+        }
+
+        if (parents.length > 0) {
+          summary += ` They were the child of ${parents.join(' and ')}.`;
+        }
+      }
+    }
+
+    // Life events
+    summary += `\n\n## Life Events\n\n`;
+    const sortedEvents = this.sortEventsByDate(events.filter(e => e.type !== 'Birth' && e.type !== 'Death'));
+
+    if (sortedEvents.length > 0) {
+      for (const event of sortedEvents) {
+        summary += `**${event.type}**`;
+        if (event.date || event.location) {
+          summary += ': ';
+          const parts = [];
+          if (event.date) parts.push(event.date);
+          if (event.location) parts.push(event.location);
+          summary += parts.join(', ');
+        }
+        summary += '\n\n';
+      }
+    } else {
+      summary += `No additional life events are recorded.\n\n`;
+    }
+
+    // Death information
+    summary += `## Later Life and Death\n\n`;
+    if (deathEvent) {
+      summary += `${name} passed away`;
+      if (deathEvent.date) summary += ` on ${deathEvent.date}`;
+      if (deathEvent.location) summary += ` in ${deathEvent.location}`;
+      summary += `.`;
+    } else {
+      summary += `Death details for ${name} are not recorded.`;
+    }
+
+    return summary;
+  }
+
+  /**
+   * Generate chronological summary (timeline-focused)
+   */
+  generateChronologicalSummary(name, birthEvent, deathEvent, events) {
+    let summary = `# ${name} - Timeline\n\n`;
+
+    const allEvents = [...events];
+    if (birthEvent) allEvents.unshift({ ...birthEvent, type: 'Birth' });
+    if (deathEvent) allEvents.push({ ...deathEvent, type: 'Death' });
+
+    const sortedEvents = this.sortEventsByDate(allEvents);
+
+    for (const event of sortedEvents) {
+      const year = this.extractYear(event.date);
+      const age = birthEvent && year ? year - this.extractYear(birthEvent.date) : null;
+
+      summary += `**${year || 'Unknown date'}**`;
+      if (age !== null && age >= 0) {
+        summary += ` (Age ${age})`;
+      }
+      summary += ` - ${event.type}`;
+
+      if (event.location) {
+        summary += ` in ${event.location}`;
+      }
+
+      summary += '\n\n';
+    }
+
+    return summary;
+  }
+
+  /**
+   * Generate thematic summary (organized by life themes)
+   */
+  generateThematicSummary(name, birthEvent, deathEvent, events) {
+    let summary = `# ${name} - Life Themes\n\n`;
+
+    // Group events by theme
+    const themes = {
+      'Origins': [],
+      'Family': [],
+      'Migration': [],
+      'Occupation & Service': [],
+      'Later Life': [],
+    };
+
+    if (birthEvent) themes['Origins'].push({ ...birthEvent, type: 'Birth' });
+
+    for (const event of events) {
+      if (['Marriage', 'Christening', 'Baptism'].includes(event.type)) {
+        themes['Family'].push(event);
+      } else if (['Immigration', 'Emigration', 'Naturalization', 'Residence'].includes(event.type)) {
+        themes['Migration'].push(event);
+      } else if (['Occupation', 'Military', 'Graduation'].includes(event.type)) {
+        themes['Occupation & Service'].push(event);
+      } else if (['Census', 'Burial'].includes(event.type)) {
+        themes['Later Life'].push(event);
+      } else {
+        themes['Origins'].push(event);
+      }
+    }
+
+    if (deathEvent) themes['Later Life'].push({ ...deathEvent, type: 'Death' });
+
+    // Write each theme
+    for (const [theme, themeEvents] of Object.entries(themes)) {
+      if (themeEvents.length === 0) continue;
+
+      summary += `## ${theme}\n\n`;
+
+      for (const event of themeEvents) {
+        summary += `- **${event.type}**`;
+        if (event.date || event.location) {
+          summary += ': ';
+          const parts = [];
+          if (event.date) parts.push(event.date);
+          if (event.location) parts.push(event.location);
+          summary += parts.join(', ');
+        }
+        summary += '\n';
+      }
+
+      summary += '\n';
+    }
+
+    return summary;
+  }
+
+  /**
+   * Sort events by date
+   */
+  sortEventsByDate(events) {
+    return events.sort((a, b) => {
+      const yearA = this.extractYear(a.date);
+      const yearB = this.extractYear(b.date);
+
+      if (!yearA && !yearB) return 0;
+      if (!yearA) return 1;
+      if (!yearB) return -1;
+
+      return yearA - yearB;
+    });
+  }
+
+  /**
+   * Extract year from date string
+   */
+  extractYear(dateStr) {
+    if (!dateStr) return null;
+
+    // Try to find a 4-digit year
+    const yearMatch = dateStr.match(/\b(1\d{3}|20\d{2})\b/);
+    return yearMatch ? parseInt(yearMatch[1]) : null;
   }
 
   async cleanup() {
