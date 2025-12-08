@@ -4,13 +4,28 @@ A Model Context Protocol (MCP) server for exploring genealogy data on Ancestry.c
 
 ## Features
 
-- **Authentication**: Login to Ancestry.com using credentials
-- **Person Search**: Search for individuals by name, dates, and location
+- **Authentication**: Login to Ancestry.com using credentials with session persistence
+- **Person Search**: Search for individuals by name, dates, and location with fallback selectors
 - **Profile Details**: Extract detailed information from person profiles
 - **Family Tree Navigation**: Explore family relationships across generations
 - **Historical Records**: Access attached records and documents
 - **Timeline Extraction**: Get chronological life events
-- **Narrative Generation**: Create historical narratives with contextual information
+- **Narrative Generation**: Create rich, imaginative historical narratives with:
+  - Detailed historical context by era and location
+  - Major world events during the person's lifetime
+  - Age calculations for all life events
+  - Period-appropriate storytelling and language
+  - Philosophical reflections on their life journey
+
+## Reliability Features
+
+- **Retry Logic**: Automatic retry with exponential backoff for failed operations
+- **Session Persistence**: Saves login cookies to avoid repeated authentication
+- **Multiple Selectors**: Falls back to alternative CSS selectors when site structure changes
+- **Error Handling**: Comprehensive error catching with detailed error messages
+- **Screenshot Debugging**: Automatically captures screenshots when errors occur
+- **Popup Handling**: Detects and closes cookie consent dialogs automatically
+- **Graceful Degradation**: Continues operation even when some elements are missing
 
 ## Installation
 
@@ -183,9 +198,23 @@ The server uses Playwright selectors that may need updating if Ancestry.com chan
 
 ## Troubleshooting
 
-**Login fails**: Verify credentials in config file
-**Selectors not working**: Ancestry.com may have changed their HTML structure
-**Browser crashes**: Check Playwright installation: `npx playwright install chromium`
+**Login fails**:
+- Verify credentials in config file
+- Check for screenshots in the server directory (screenshot-login-*.png)
+- Session cookies are saved in `.ancestry-session.json` - delete this file to force fresh login
+
+**Selectors not working**:
+- The server uses multiple fallback selectors to handle site changes
+- Check screenshots (screenshot-*.png) to see what the page looks like
+- Selectors may still need updating if Ancestry.com made major changes
+
+**Browser crashes**:
+- Check Playwright installation: `npx playwright install chromium`
+- Try running with `headless: false` in index.js for debugging
+
+**Connection issues**:
+- The server automatically retries failed requests 3 times with exponential backoff
+- Check console error messages for details
 
 ## License
 

@@ -7,6 +7,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Ancestry.com MCP Server
@@ -36,14 +41,126 @@ class AncestryMCPServer {
     this.username = process.env.ANCESTRY_USERNAME;
     this.password = process.env.ANCESTRY_PASSWORD;
 
+    // Retry configuration
+    this.maxRetries = 3;
+    this.retryDelay = 2000; // Start with 2 seconds
+
+    // Session persistence
+    this.sessionFile = path.join(__dirname, '.ancestry-session.json');
+
     this.setupToolHandlers();
-    
+
     // Error handling
     this.server.onerror = (error) => console.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
       await this.cleanup();
       process.exit(0);
     });
+  }
+
+  /**
+   * Retry a function with exponential backoff
+   */
+  async retryWithBackoff(fn, context = '') {
+    let lastError;
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        const delay = this.retryDelay * Math.pow(2, attempt);
+        console.error(`[Retry ${attempt + 1}/${this.maxRetries}] ${context} failed: ${error.message}`);
+
+        if (attempt < this.maxRetries - 1) {
+          console.error(`Waiting ${delay}ms before retry...`);
+          await this.sleep(delay);
+        }
+      }
+    }
+    throw new Error(`${context} failed after ${this.maxRetries} attempts: ${lastError.message}`);
+  }
+
+  /**
+   * Sleep utility
+   */
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Take a screenshot for debugging
+   */
+  async takeScreenshot(name = 'debug') {
+    try {
+      const screenshotPath = path.join(__dirname, `screenshot-${name}-${Date.now()}.png`);
+      await this.page.screenshot({ path: screenshotPath, fullPage: true });
+      console.error(`Screenshot saved: ${screenshotPath}`);
+      return screenshotPath;
+    } catch (error) {
+      console.error(`Failed to take screenshot: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Handle common popups and cookie consent dialogs
+   */
+  async handlePopups() {
+    try {
+      // Try to close cookie consent
+      const cookieButtons = [
+        'button:has-text("Accept")',
+        'button:has-text("Accept All")',
+        'button:has-text("I Accept")',
+        '[data-testid="cookie-accept"]',
+        '.cookie-accept',
+      ];
+
+      for (const selector of cookieButtons) {
+        try {
+          const button = await this.page.$(selector);
+          if (button) {
+            await button.click({ timeout: 1000 });
+            console.error('Closed cookie consent dialog');
+            await this.sleep(500);
+            break;
+          }
+        } catch (e) {
+          // Ignore if button not found
+        }
+      }
+    } catch (error) {
+      // Silently fail - popups are optional
+    }
+  }
+
+  /**
+   * Save session cookies
+   */
+  async saveSession() {
+    try {
+      const cookies = await this.context.cookies();
+      await fs.writeFile(this.sessionFile, JSON.stringify(cookies, null, 2));
+      console.error('Session saved');
+    } catch (error) {
+      console.error(`Failed to save session: ${error.message}`);
+    }
+  }
+
+  /**
+   * Load session cookies
+   */
+  async loadSession() {
+    try {
+      const data = await fs.readFile(this.sessionFile, 'utf-8');
+      const cookies = JSON.parse(data);
+      await this.context.addCookies(cookies);
+      console.error('Session loaded');
+      return true;
+    } catch (error) {
+      console.error('No saved session found');
+      return false;
+    }
   }
 
   setupToolHandlers() {
@@ -235,14 +352,24 @@ class AncestryMCPServer {
 
   async initBrowser() {
     if (!this.browser) {
-      this.browser = await chromium.launch({
-        headless: true,
-      });
-      this.context = await this.browser.newContext({
-        viewport: { width: 1920, height: 1080 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      });
-      this.page = await this.context.newPage();
+      try {
+        this.browser = await chromium.launch({
+          headless: true,
+          args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        });
+        this.context = await this.browser.newContext({
+          viewport: { width: 1920, height: 1080 },
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        });
+        this.page = await this.context.newPage();
+
+        // Set default timeout
+        this.page.setDefaultTimeout(30000);
+
+        console.error('Browser initialized successfully');
+      } catch (error) {
+        throw new Error(`Failed to initialize browser: ${error.message}`);
+      }
     }
   }
 
@@ -253,34 +380,102 @@ class AncestryMCPServer {
 
     await this.initBrowser();
 
-    try {
-      await this.page.goto('https://www.ancestry.com/account/signin', {
-        waitUntil: 'networkidle',
-      });
+    // Try loading saved session first
+    const sessionLoaded = await this.loadSession();
+    if (sessionLoaded) {
+      // Verify session is still valid
+      try {
+        await this.page.goto('https://www.ancestry.com', { timeout: 15000 });
+        await this.handlePopups();
 
-      // Fill in login form
-      await this.page.fill('input[name="username"]', this.username);
-      await this.page.fill('input[name="password"]', this.password);
-      
-      // Click sign in
-      await this.page.click('button[type="submit"]');
-      
-      // Wait for navigation
-      await this.page.waitForLoadState('networkidle');
+        // Check if we're logged in
+        const isStillLoggedIn = await this.page.evaluate(() => {
+          return !window.location.href.includes('signin');
+        });
 
-      this.isLoggedIn = true;
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'Successfully logged in to Ancestry.com',
-          },
-        ],
-      };
-    } catch (error) {
-      throw new Error(`Login failed: ${error.message}`);
+        if (isStillLoggedIn) {
+          this.isLoggedIn = true;
+          console.error('Using saved session');
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Successfully logged in using saved session',
+              },
+            ],
+          };
+        }
+      } catch (error) {
+        console.error('Saved session invalid, logging in fresh');
+      }
     }
+
+    // Perform fresh login with retry
+    return await this.retryWithBackoff(async () => {
+      try {
+        await this.page.goto('https://www.ancestry.com/account/signin', {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
+        });
+
+        await this.handlePopups();
+
+        // Wait for login form
+        await this.page.waitForSelector('input[name="username"], input[type="email"]', {
+          timeout: 10000,
+        });
+
+        // Fill in login form (try multiple selectors)
+        const usernameInput = await this.page.$('input[name="username"]') || await this.page.$('input[type="email"]');
+        const passwordInput = await this.page.$('input[name="password"]') || await this.page.$('input[type="password"]');
+
+        if (!usernameInput || !passwordInput) {
+          await this.takeScreenshot('login-form-not-found');
+          throw new Error('Could not find login form fields');
+        }
+
+        await usernameInput.fill(this.username);
+        await passwordInput.fill(this.password);
+
+        // Click sign in
+        const submitButton = await this.page.$('button[type="submit"]') || await this.page.$('button:has-text("Sign In")');
+        if (!submitButton) {
+          await this.takeScreenshot('submit-button-not-found');
+          throw new Error('Could not find submit button');
+        }
+
+        await submitButton.click();
+
+        // Wait for navigation
+        await this.page.waitForLoadState('domcontentloaded', { timeout: 30000 });
+        await this.sleep(2000); // Give time for redirect
+
+        // Check for login errors
+        const errorElement = await this.page.$('.error, .alert-danger, [role="alert"]');
+        if (errorElement) {
+          const errorText = await errorElement.textContent();
+          await this.takeScreenshot('login-error');
+          throw new Error(`Login error: ${errorText}`);
+        }
+
+        this.isLoggedIn = true;
+        await this.saveSession();
+
+        console.error('Fresh login successful');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Successfully logged in to Ancestry.com',
+            },
+          ],
+        };
+      } catch (error) {
+        await this.takeScreenshot('login-failed');
+        throw error;
+      }
+    }, 'Login');
   }
 
   async searchPerson(args) {
@@ -288,59 +483,106 @@ class AncestryMCPServer {
 
     const { firstName, lastName, birthYear, deathYear, location } = args;
 
-    try {
-      // Go to search page
-      await this.page.goto('https://www.ancestry.com/search/', {
-        waitUntil: 'networkidle',
-      });
-
-      // Fill search form
-      await this.page.fill('input[name="firstname"]', firstName);
-      await this.page.fill('input[name="lastname"]', lastName);
-      
-      if (birthYear) {
-        await this.page.fill('input[name="birth"]', birthYear);
-      }
-      if (deathYear) {
-        await this.page.fill('input[name="death"]', deathYear);
-      }
-      if (location) {
-        await this.page.fill('input[name="location"]', location);
-      }
-
-      // Submit search
-      await this.page.click('button[type="submit"]');
-      await this.page.waitForLoadState('networkidle');
-
-      // Extract search results
-      const results = await this.page.evaluate(() => {
-        const resultElements = document.querySelectorAll('.searchResult');
-        return Array.from(resultElements).slice(0, 10).map(el => {
-          const nameEl = el.querySelector('.name');
-          const birthEl = el.querySelector('.birth');
-          const deathEl = el.querySelector('.death');
-          const linkEl = el.querySelector('a');
-          
-          return {
-            name: nameEl?.textContent?.trim() || '',
-            birth: birthEl?.textContent?.trim() || '',
-            death: deathEl?.textContent?.trim() || '',
-            url: linkEl?.href || '',
-          };
+    return await this.retryWithBackoff(async () => {
+      try {
+        // Go to search page
+        await this.page.goto('https://www.ancestry.com/search/', {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
         });
-      });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ results, count: results.length }, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      throw new Error(`Search failed: ${error.message}`);
-    }
+        await this.handlePopups();
+        await this.sleep(1000);
+
+        // Try multiple selector patterns for the search form
+        const firstNameInput = await this.page.$('input[name="firstname"]') ||
+          await this.page.$('input[name="first_name"]') ||
+          await this.page.$('input[placeholder*="First"]');
+
+        const lastNameInput = await this.page.$('input[name="lastname"]') ||
+          await this.page.$('input[name="last_name"]') ||
+          await this.page.$('input[placeholder*="Last"]');
+
+        if (!firstNameInput || !lastNameInput) {
+          await this.takeScreenshot('search-form-not-found');
+          throw new Error('Could not find search form - selectors may be outdated');
+        }
+
+        // Fill search form
+        await firstNameInput.fill(firstName);
+        await lastNameInput.fill(lastName);
+
+        if (birthYear) {
+          const birthInput = await this.page.$('input[name="birth"]') || await this.page.$('input[name="birth_year"]');
+          if (birthInput) await birthInput.fill(birthYear);
+        }
+        if (deathYear) {
+          const deathInput = await this.page.$('input[name="death"]') || await this.page.$('input[name="death_year"]');
+          if (deathInput) await deathInput.fill(deathYear);
+        }
+        if (location) {
+          const locationInput = await this.page.$('input[name="location"]') || await this.page.$('input[name="residence"]');
+          if (locationInput) await locationInput.fill(location);
+        }
+
+        // Submit search
+        const submitButton = await this.page.$('button[type="submit"]') || await this.page.$('button:has-text("Search")');
+        if (!submitButton) {
+          await this.takeScreenshot('search-submit-not-found');
+          throw new Error('Could not find search submit button');
+        }
+
+        await submitButton.click();
+        await this.page.waitForLoadState('domcontentloaded', { timeout: 30000 });
+        await this.sleep(2000);
+
+        // Extract search results with fallback selectors
+        const results = await this.page.evaluate(() => {
+          const selectors = ['.searchResult', '.result-item', '[data-test="search-result"]', '.search-result'];
+          let resultElements = [];
+
+          for (const selector of selectors) {
+            resultElements = document.querySelectorAll(selector);
+            if (resultElements.length > 0) break;
+          }
+
+          if (resultElements.length === 0) {
+            return [];
+          }
+
+          return Array.from(resultElements).slice(0, 10).map(el => {
+            const nameEl = el.querySelector('.name, .person-name, [data-test="name"], h3, h4');
+            const birthEl = el.querySelector('.birth, .birth-date, [data-test="birth"]');
+            const deathEl = el.querySelector('.death, .death-date, [data-test="death"]');
+            const linkEl = el.querySelector('a');
+
+            return {
+              name: nameEl?.textContent?.trim() || '',
+              birth: birthEl?.textContent?.trim() || '',
+              death: deathEl?.textContent?.trim() || '',
+              url: linkEl?.href || '',
+            };
+          });
+        });
+
+        if (results.length === 0) {
+          await this.takeScreenshot('no-results');
+          console.error('No search results found - selectors may need updating');
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ results, count: results.length }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        await this.takeScreenshot('search-failed');
+        throw error;
+      }
+    }, 'Search Person');
   }
 
   async getPersonDetails(profileUrl) {
@@ -549,44 +791,125 @@ class AncestryMCPServer {
       // Extract key information
       const { name, birthDate, birthPlace, deathDate, deathPlace, events = [] } = personData;
 
-      let narrative = `# Life Story of ${name}\n\n`;
+      // Parse dates for age calculations
+      const birthYear = birthDate ? parseInt(birthDate.match(/\d{4}/)?.[0]) : null;
+      const deathYear = deathDate ? parseInt(deathDate.match(/\d{4}/)?.[0]) : null;
+      const lifespan = birthYear && deathYear ? deathYear - birthYear : null;
 
-      // Birth section
+      let narrative = `# The Life and Times of ${name}\n\n`;
+      narrative += `*A narrative woven from historical records and the echoes of a life lived*\n\n`;
+
+      // Birth section with rich context
       if (birthDate && birthPlace) {
-        narrative += `## Early Life\n\n`;
-        narrative += `${name} was born on ${birthDate} in ${birthPlace}.\n\n`;
+        narrative += `## The Dawn of a Journey\n\n`;
+        const birthDecade = birthYear ? Math.floor(birthYear / 10) * 10 : null;
 
-        // Add historical context (this would use web search in full implementation)
-        if (includeRegionalHistory && birthPlace) {
-          narrative += `During this time, ${birthPlace} was experiencing [historical context would be added via web search].\n\n`;
+        narrative += `In the ${this.describeEra(birthYear)}, on ${birthDate}, `;
+        narrative += `${name} entered the world in ${birthPlace}. `;
+
+        if (includeRegionalHistory && birthPlace && birthYear) {
+          narrative += this.generateBirthContext(birthPlace, birthYear);
         }
+
+        // Add decade flavor
+        if (birthDecade) {
+          narrative += `\n\nThe ${birthDecade}s were `;
+          narrative += this.getDecadeDescription(birthDecade);
+          narrative += ` For a child born in this era, `;
+          narrative += this.getChildhoodContext(birthDecade, birthPlace);
+        }
+        narrative += `\n\n`;
       }
 
-      // Major life events
+      // Major life events with storytelling
       if (events.length > 0) {
-        narrative += `## Life Events\n\n`;
-        events.forEach(event => {
-          narrative += `### ${event.type}\n`;
-          if (event.date) narrative += `**Date:** ${event.date}\n`;
-          if (event.location) narrative += `**Location:** ${event.location}\n`;
-          narrative += '\n';
+        narrative += `## The Chapters of a Life\n\n`;
+        const sortedEvents = this.sortEventsByDate(events);
+
+        sortedEvents.forEach((event, index) => {
+          const eventYear = event.date ? parseInt(event.date.match(/\d{4}/)?.[0]) : null;
+          const ageAtEvent = birthYear && eventYear ? eventYear - birthYear : null;
+
+          narrative += `### ${this.getOrdinal(index + 1)} Chapter: ${event.type}\n\n`;
+
+          if (event.date) {
+            narrative += `📅 **${event.date}**`;
+            if (ageAtEvent !== null) {
+              narrative += ` (Age ${ageAtEvent})`;
+            }
+            narrative += `\n`;
+          }
+          if (event.location) {
+            narrative += `📍 **${event.location}**\n`;
+          }
+
+          narrative += `\n${this.generateEventNarrative(event, ageAtEvent, eventYear)}\n\n`;
         });
       }
 
-      // Death section
-      if (deathDate && deathPlace) {
-        narrative += `## Later Years\n\n`;
-        narrative += `${name} passed away on ${deathDate} in ${deathPlace}.\n\n`;
-      }
-
       // Historical timeline
-      if (includeWorldEvents && birthDate) {
-        narrative += `## Historical Context\n\n`;
-        narrative += `During ${name}'s lifetime, the world saw [major events would be added via web search].\n\n`;
+      if (includeWorldEvents && birthYear && deathYear) {
+        narrative += `## Living Through History\n\n`;
+        narrative += `Between ${birthYear} and ${deathYear}, `;
+        narrative += `${name} witnessed ${lifespan} years of human history unfold. `;
+        narrative += `This was an era of tremendous change:\n\n`;
+
+        const historicalEvents = this.getHistoricalEvents(birthYear, deathYear);
+        historicalEvents.forEach(event => {
+          const ageAtEvent = event.year - birthYear;
+          narrative += `- **${event.year}** (Age ${ageAtEvent}): ${event.description}\n`;
+        });
+        narrative += `\n`;
       }
 
-      narrative += `---\n\n*This narrative was generated based on available genealogical records. `;
-      narrative += `Historical context can be enriched by searching for events during the person's lifetime.*\n`;
+      // Life summary and reflection
+      if (birthYear && deathYear) {
+        narrative += `## A Life Remembered\n\n`;
+        narrative += `${name} lived for ${lifespan} years, `;
+        narrative += `spanning nearly ${Math.ceil(lifespan / 10)} decades of profound change. `;
+
+        if (birthPlace && deathPlace) {
+          if (birthPlace !== deathPlace) {
+            narrative += `Their journey took them from ${birthPlace} to ${deathPlace}, `;
+            narrative += `a testament to the mobility and restlessness that defined their generation. `;
+          } else {
+            narrative += `They remained rooted in ${birthPlace} throughout their life, `;
+            narrative += `witnessing the transformation of their homeland across the decades. `;
+          }
+        }
+
+        narrative += `\n\n`;
+        narrative += this.generateLifePhilosophy(lifespan, birthYear, deathYear);
+      }
+
+      // Death section with dignity
+      if (deathDate && deathPlace) {
+        narrative += `## The Final Chapter\n\n`;
+        narrative += `On ${deathDate}, ${name}'s earthly journey concluded in ${deathPlace}. `;
+
+        if (lifespan) {
+          narrative += `They had lived to see `;
+          if (lifespan < 40) {
+            narrative += `the spring of life, though their time was cut short. `;
+          } else if (lifespan < 60) {
+            narrative += `the fullness of middle age, a life of purpose and meaning. `;
+          } else if (lifespan < 80) {
+            narrative += `the wisdom of old age, carrying memories spanning generations. `;
+          } else {
+            narrative += `an extraordinary length of years, a living bridge between eras. `;
+          }
+        }
+
+        narrative += `Their story, preserved in records and memories, continues to echo through time.\n\n`;
+      }
+
+      // Closing reflection
+      narrative += `---\n\n`;
+      narrative += `> *"Every life is a universe of experiences, dreams, struggles, and triumphs. `;
+      narrative += `Through the fragments preserved in genealogical records, we glimpse the human spirit `;
+      narrative += `that animated ${name}'s journey through this world."*\n\n`;
+      narrative += `*This narrative was imaginatively reconstructed from historical records, blending `;
+      narrative += `documented facts with period-appropriate context to honor ${name}'s memory.*\n`;
 
       return {
         content: [
@@ -599,6 +922,211 @@ class AncestryMCPServer {
     } catch (error) {
       throw new Error(`Failed to generate narrative: ${error.message}`);
     }
+  }
+
+  // Helper functions for narrative generation
+
+  describeEra(year) {
+    if (!year) return 'a time long past';
+    if (year < 1500) return 'medieval times';
+    if (year < 1700) return 'early modern era';
+    if (year < 1800) return 'age of enlightenment';
+    if (year < 1850) return 'early 19th century';
+    if (year < 1900) return 'Victorian era';
+    if (year < 1920) return 'turn of the century';
+    if (year < 1950) return 'early 20th century';
+    if (year < 1980) return 'mid-20th century';
+    if (year < 2000) return 'late 20th century';
+    return 'dawn of the new millennium';
+  }
+
+  generateBirthContext(place, year) {
+    const contexts = [];
+
+    // Regional context based on place
+    if (place.includes('New York') || place.includes('NY')) {
+      if (year < 1900) {
+        contexts.push('New York was rapidly transforming into America\'s greatest metropolis, drawing immigrants from across the world.');
+      } else {
+        contexts.push('New York stood as the beating heart of American commerce and culture.');
+      }
+    } else if (place.includes('California') || place.includes('CA')) {
+      if (year < 1850) {
+        contexts.push('California was on the cusp of the Gold Rush, about to transform from frontier to boomtown.');
+      } else {
+        contexts.push('California represented the American dream of westward expansion and new beginnings.');
+      }
+    } else if (place.includes('England') || place.includes('London')) {
+      contexts.push('England was at the height of its imperial power, with the sun never setting on the British Empire.');
+    } else if (place.includes('Ireland')) {
+      contexts.push('Ireland was a land of green hills and ancient traditions, though often struggling under difficult circumstances.');
+    } else if (place.includes('Germany') || place.includes('German')) {
+      contexts.push('Germany was a land of intellectual ferment and industrial might, shaping the modern world.');
+    } else {
+      contexts.push(`${place} was a community where families put down roots and futures were built one generation at a time.`);
+    }
+
+    return contexts.join(' ');
+  }
+
+  getDecadeDescription(decade) {
+    const descriptions = {
+      1700: 'a time of colonial expansion and growing tensions between empires.',
+      1710: 'marked by scientific discovery and the early stirrings of industrialization.',
+      1720: 'characterized by agricultural innovation and expanding global trade.',
+      1730: 'seeing the Great Awakening and renewed religious fervor.',
+      1740: 'a period of war and political upheaval across Europe.',
+      1750: 'witnessing the Seven Years\' War and colonial conflicts.',
+      1760: 'on the brink of revolutionary change in America and beyond.',
+      1770: 'the decade of the American Revolution and birth of a nation.',
+      1780: 'consolidating the gains of revolution and building new governments.',
+      1790: 'seeing the French Revolution reshape the political landscape.',
+      1800: 'the dawn of a new century filled with promise and peril.',
+      1810: 'marked by the Napoleonic Wars and their global impact.',
+      1820: 'a time of westward expansion and manifest destiny.',
+      1830: 'seeing the rise of railways and the telegraph.',
+      1840: 'marked by massive immigration and industrial growth.',
+      1850: 'on the eve of civil conflict in America.',
+      1860: 'torn by the Civil War and the struggle for human freedom.',
+      1870: 'an era of Reconstruction and industrial explosion.',
+      1880: 'the Gilded Age of robber barons and technological marvels.',
+      1890: 'closing the frontier and opening global markets.',
+      1900: 'the dawn of the modern age with automobiles and electricity.',
+      1910: 'building toward the Great War that would reshape everything.',
+      1920: 'the Roaring Twenties of jazz, prosperity, and social change.',
+      1930: 'darkened by the Great Depression and rising totalitarianism.',
+      1940: 'consumed by World War II and the atomic age.',
+      1950: 'the postwar boom and the dawn of the Space Age.',
+      1960: 'revolutionary times of social upheaval and cultural transformation.',
+      1970: 'questioning old certainties and seeking new directions.',
+      1980: 'marked by technological revolution and the Cold War\'s end.',
+      1990: 'ushering in the digital age and globalization.',
+      2000: 'entering a new millennium of connectivity and rapid change.',
+    };
+
+    return descriptions[decade] || 'a time of change and continuity, as all times are.';
+  }
+
+  getChildhoodContext(decade, place) {
+    if (decade < 1850) {
+      return 'life would be shaped by manual labor, tight-knit communities, and the rhythms of agricultural life.';
+    } else if (decade < 1900) {
+      return 'childhood meant witnessing the transformation from agrarian to industrial society.';
+    } else if (decade < 1950) {
+      return 'growing up meant experiencing the dramatic changes of wars, depressions, and technological revolution.';
+    } else {
+      return 'the world was changing faster than ever before, with new possibilities emerging each year.';
+    }
+  }
+
+  generateEventNarrative(event, age, year) {
+    const narratives = [];
+
+    switch (event.type?.toLowerCase()) {
+      case 'birth':
+        narratives.push('A new life began, full of infinite possibility and unknown destiny.');
+        break;
+      case 'marriage':
+        narratives.push(`Two lives joined together, creating a partnership that would face whatever the future held.`);
+        if (age) {
+          narratives.push(`At age ${age}, ${this.getMarriageContext(age)}`);
+        }
+        break;
+      case 'immigration':
+        narratives.push('A momentous decision to leave behind the familiar and journey to unknown shores in search of a better life.');
+        narratives.push('This act of courage would echo through generations.');
+        break;
+      case 'census':
+        narratives.push(`Counted among the residents of ${event.location || 'their community'}, this snapshot captures a moment in their daily life.`);
+        break;
+      case 'military':
+      case 'draft':
+        narratives.push('Called to serve their country in uniform, joining countless others in the cause.');
+        break;
+      case 'death':
+        narratives.push('The final rest came, and a life\'s journey reached its conclusion.');
+        break;
+      default:
+        narratives.push(`This moment marked an important milestone in their life's journey.`);
+    }
+
+    return narratives.join(' ');
+  }
+
+  getMarriageContext(age) {
+    if (age < 18) return 'marriage came early, as was common in that era.';
+    if (age < 25) return 'they joined their life with another at a typical age for the times.';
+    if (age < 35) return 'they found their life partner with some maturity and experience.';
+    return 'they married later in life, bringing wisdom and perspective to the union.';
+  }
+
+  sortEventsByDate(events) {
+    return events.sort((a, b) => {
+      const dateA = a.date ? new Date(a.date.match(/\d{4}/)?.[0] || '1900') : new Date(0);
+      const dateB = b.date ? new Date(b.date.match(/\d{4}/)?.[0] || '1900') : new Date(0);
+      return dateA - dateB;
+    });
+  }
+
+  getOrdinal(n) {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  }
+
+  getHistoricalEvents(birthYear, deathYear) {
+    const majorEvents = [
+      { year: 1776, description: 'American Declaration of Independence - birth of a new nation' },
+      { year: 1789, description: 'French Revolution begins, reshaping European politics' },
+      { year: 1803, description: 'Louisiana Purchase doubles the size of the United States' },
+      { year: 1812, description: 'War of 1812 between America and Britain' },
+      { year: 1825, description: 'Erie Canal opens, transforming American commerce' },
+      { year: 1848, description: 'California Gold Rush begins, drawing thousands westward' },
+      { year: 1861, description: 'American Civil War begins' },
+      { year: 1865, description: 'Civil War ends, slavery abolished' },
+      { year: 1869, description: 'Transcontinental Railroad completed' },
+      { year: 1876, description: 'Telephone invented by Alexander Graham Bell' },
+      { year: 1879, description: 'Electric light bulb perfected by Thomas Edison' },
+      { year: 1886, description: 'Statue of Liberty dedicated in New York Harbor' },
+      { year: 1898, description: 'Spanish-American War expands American influence' },
+      { year: 1903, description: 'Wright Brothers achieve powered flight' },
+      { year: 1914, description: 'World War I begins in Europe' },
+      { year: 1918, description: 'World War I ends; Spanish Flu pandemic' },
+      { year: 1920, description: 'Women gain the right to vote in America' },
+      { year: 1929, description: 'Stock Market Crash; Great Depression begins' },
+      { year: 1939, description: 'World War II begins in Europe' },
+      { year: 1941, description: 'Pearl Harbor; America enters World War II' },
+      { year: 1945, description: 'World War II ends; Atomic age begins' },
+      { year: 1950, description: 'Korean War begins' },
+      { year: 1957, description: 'Space Age begins with Sputnik' },
+      { year: 1963, description: 'President Kennedy assassinated' },
+      { year: 1969, description: 'First humans walk on the Moon' },
+      { year: 1989, description: 'Berlin Wall falls; Cold War ends' },
+      { year: 2001, description: 'September 11 attacks reshape the world' },
+    ];
+
+    return majorEvents.filter(event => event.year >= birthYear && event.year <= deathYear);
+  }
+
+  generateLifePhilosophy(lifespan, birthYear, deathYear) {
+    let philosophy = '';
+
+    const centurySpan = Math.floor(deathYear / 100) - Math.floor(birthYear / 100);
+
+    if (centurySpan > 0) {
+      philosophy += `Remarkably, ${name} lived across the boundary of centuries, `;
+      philosophy += `seeing the world transform in ways previous generations could never have imagined. `;
+    }
+
+    if (lifespan > 70) {
+      philosophy += `To have lived so long was to carry within oneself a library of memories, `;
+      philosophy += `a living connection to a vanished world. `;
+    }
+
+    philosophy += `Each day was a thread in the great tapestry of human experience, `;
+    philosophy += `woven together with countless others to create the pattern we call history.`;
+
+    return philosophy;
   }
 
   async ensureLoggedIn() {
