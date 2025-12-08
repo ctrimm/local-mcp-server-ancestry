@@ -10,6 +10,7 @@ import { chromium } from 'playwright';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import parseGedcom from 'parse-gedcom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +41,11 @@ class AncestryMCPServer {
     // Get credentials from environment variables
     this.username = process.env.ANCESTRY_USERNAME;
     this.password = process.env.ANCESTRY_PASSWORD;
+
+    // GEDCOM file support
+    this.gedcomFilePath = process.env.GEDCOM_FILE;
+    this.gedcomData = null;
+    this.gedcomIndex = null; // Index for fast lookups
 
     // Retry configuration
     this.maxRetries = 3;
@@ -305,6 +311,132 @@ class AncestryMCPServer {
             required: ['personData'],
           },
         },
+        {
+          name: 'gedcom_load',
+          description: 'Load and parse a GEDCOM file from the specified path. This makes the genealogy data available for other GEDCOM tools.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              filePath: {
+                type: 'string',
+                description: 'Path to the GEDCOM file (optional if GEDCOM_FILE env var is set)',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'gedcom_search_person',
+          description: 'Search for people in the loaded GEDCOM file by name, dates, or location',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              firstName: {
+                type: 'string',
+                description: 'First name to search for',
+              },
+              lastName: {
+                type: 'string',
+                description: 'Last name to search for',
+              },
+              birthYear: {
+                type: 'string',
+                description: 'Birth year (approximate match)',
+              },
+              deathYear: {
+                type: 'string',
+                description: 'Death year (approximate match)',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'gedcom_get_person',
+          description: 'Get complete details about a specific person from the GEDCOM file',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID (e.g., "@I123@")',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
+        {
+          name: 'gedcom_get_ancestors',
+          description: 'Get ancestors of a person (parents, grandparents, etc.) from GEDCOM',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+              generations: {
+                type: 'number',
+                description: 'Number of generations to retrieve (default: 3)',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
+        {
+          name: 'gedcom_get_descendants',
+          description: 'Get descendants of a person (children, grandchildren, etc.) from GEDCOM',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+              generations: {
+                type: 'number',
+                description: 'Number of generations to retrieve (default: 3)',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
+        {
+          name: 'gedcom_get_family',
+          description: 'Get immediate family (parents, spouse(s), children) for a person from GEDCOM',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
+        {
+          name: 'gedcom_generate_narrative',
+          description: 'Generate a rich historical narrative for a person using data from GEDCOM file',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+              includeWorldEvents: {
+                type: 'boolean',
+                description: 'Include major world events (default: true)',
+              },
+              includeRegionalHistory: {
+                type: 'boolean',
+                description: 'Include regional history (default: true)',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
       ],
     }));
 
@@ -333,7 +465,29 @@ class AncestryMCPServer {
           
           case 'generate_historical_narrative':
             return await this.generateNarrative(args);
-          
+
+          // GEDCOM tools
+          case 'gedcom_load':
+            return await this.loadGedcom(args.filePath);
+
+          case 'gedcom_search_person':
+            return await this.gedcomSearchPerson(args);
+
+          case 'gedcom_get_person':
+            return await this.gedcomGetPerson(args.individualId);
+
+          case 'gedcom_get_ancestors':
+            return await this.gedcomGetAncestors(args.individualId, args.generations || 3);
+
+          case 'gedcom_get_descendants':
+            return await this.gedcomGetDescendants(args.individualId, args.generations || 3);
+
+          case 'gedcom_get_family':
+            return await this.gedcomGetFamily(args.individualId);
+
+          case 'gedcom_generate_narrative':
+            return await this.gedcomGenerateNarrative(args);
+
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -1133,6 +1287,497 @@ class AncestryMCPServer {
     if (!this.isLoggedIn) {
       await this.login();
     }
+  }
+
+  // ========== GEDCOM Methods ==========
+
+  /**
+   * Load and parse a GEDCOM file
+   */
+  async loadGedcom(filePath) {
+    try {
+      const path = filePath || this.gedcomFilePath;
+
+      if (!path) {
+        throw new Error('No GEDCOM file path provided. Set GEDCOM_FILE environment variable or pass filePath parameter.');
+      }
+
+      console.error(`Loading GEDCOM file: ${path}`);
+      const gedcomContent = await fs.readFile(path, 'utf-8');
+
+      this.gedcomData = parseGedcom.parse(gedcomContent);
+      this.buildGedcomIndex();
+
+      const individualCount = this.gedcomIndex.individuals.size;
+      const familyCount = this.gedcomIndex.families.size;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Successfully loaded GEDCOM file!\n\nIndividuals: ${individualCount}\nFamilies: ${familyCount}\n\nYou can now use other gedcom_ tools to explore the data.`,
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to load GEDCOM file: ${error.message}`);
+    }
+  }
+
+  /**
+   * Build an index of individuals and families for fast lookup
+   */
+  buildGedcomIndex() {
+    this.gedcomIndex = {
+      individuals: new Map(),
+      families: new Map(),
+    };
+
+    if (!this.gedcomData || !this.gedcomData.children) {
+      return;
+    }
+
+    for (const record of this.gedcomData.children) {
+      if (record.tag === 'INDI' && record.pointer) {
+        this.gedcomIndex.individuals.set(record.pointer, record);
+      } else if (record.tag === 'FAM' && record.pointer) {
+        this.gedcomIndex.families.set(record.pointer, record);
+      }
+    }
+
+    console.error(`Indexed ${this.gedcomIndex.individuals.size} individuals and ${this.gedcomIndex.families.size} families`);
+  }
+
+  /**
+   * Extract name from GEDCOM individual record
+   */
+  extractName(individual) {
+    const nameTag = individual.children?.find(c => c.tag === 'NAME');
+    if (!nameTag) return 'Unknown';
+
+    const fullName = nameTag.data || '';
+    return fullName.replace(/\//g, '').trim(); // Remove GEDCOM name delimiters
+  }
+
+  /**
+   * Extract events from GEDCOM individual
+   */
+  extractEvents(individual) {
+    const events = [];
+
+    if (!individual.children) return events;
+
+    const eventTags = ['BIRT', 'DEAT', 'MARR', 'BURI', 'CHR', 'BAPM', 'GRAD', 'EMIG', 'IMMI', 'NATU', 'RESI', 'CENS', 'OCCU', 'MILI'];
+
+    for (const child of individual.children) {
+      if (eventTags.includes(child.tag)) {
+        const event = {
+          type: this.getEventTypeName(child.tag),
+          date: '',
+          location: '',
+        };
+
+        if (child.children) {
+          const dateTag = child.children.find(c => c.tag === 'DATE');
+          const placeTag = child.children.find(c => c.tag === 'PLAC');
+
+          if (dateTag) event.date = dateTag.data || '';
+          if (placeTag) event.location = placeTag.data || '';
+        }
+
+        events.push(event);
+      }
+    }
+
+    return events;
+  }
+
+  /**
+   * Get friendly event type name
+   */
+  getEventTypeName(tag) {
+    const names = {
+      'BIRT': 'Birth',
+      'DEAT': 'Death',
+      'MARR': 'Marriage',
+      'BURI': 'Burial',
+      'CHR': 'Christening',
+      'BAPM': 'Baptism',
+      'GRAD': 'Graduation',
+      'EMIG': 'Emigration',
+      'IMMI': 'Immigration',
+      'NATU': 'Naturalization',
+      'RESI': 'Residence',
+      'CENS': 'Census',
+      'OCCU': 'Occupation',
+      'MILI': 'Military',
+    };
+    return names[tag] || tag;
+  }
+
+  /**
+   * Search for people in GEDCOM
+   */
+  async gedcomSearchPerson(args) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const { firstName, lastName, birthYear, deathYear } = args;
+    const results = [];
+
+    for (const [id, individual] of this.gedcomIndex.individuals) {
+      const name = this.extractName(individual);
+      const events = this.extractEvents(individual);
+
+      const birthEvent = events.find(e => e.type === 'Birth');
+      const deathEvent = events.find(e => e.type === 'Death');
+
+      // Simple name matching
+      let matches = true;
+
+      if (firstName) {
+        matches = matches && name.toLowerCase().includes(firstName.toLowerCase());
+      }
+
+      if (lastName) {
+        matches = matches && name.toLowerCase().includes(lastName.toLowerCase());
+      }
+
+      if (birthYear && birthEvent) {
+        matches = matches && birthEvent.date.includes(birthYear);
+      }
+
+      if (deathYear && deathEvent) {
+        matches = matches && deathEvent.date.includes(deathYear);
+      }
+
+      if (matches) {
+        results.push({
+          id,
+          name,
+          birth: birthEvent ? `${birthEvent.date} ${birthEvent.location}`.trim() : '',
+          death: deathEvent ? `${deathEvent.date} ${deathEvent.location}`.trim() : '',
+        });
+      }
+
+      if (results.length >= 20) break; // Limit results
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ results, count: results.length }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Get complete person details from GEDCOM
+   */
+  async gedcomGetPerson(individualId) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individual = this.gedcomIndex.individuals.get(individualId);
+
+    if (!individual) {
+      throw new Error(`Individual ${individualId} not found in GEDCOM file.`);
+    }
+
+    const name = this.extractName(individual);
+    const events = this.extractEvents(individual);
+    const birthEvent = events.find(e => e.type === 'Birth');
+    const deathEvent = events.find(e => e.type === 'Death');
+
+    // Get sex
+    const sexTag = individual.children?.find(c => c.tag === 'SEX');
+    const sex = sexTag?.data || 'Unknown';
+
+    const details = {
+      id: individualId,
+      name,
+      sex,
+      birth: birthEvent || null,
+      death: deathEvent || null,
+      events,
+    };
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(details, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Get ancestors of a person
+   */
+  async gedcomGetAncestors(individualId, generations = 3) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const ancestors = [];
+    const visited = new Set();
+
+    const getParents = (id, generation) => {
+      if (generation > generations || visited.has(id)) return;
+      visited.add(id);
+
+      const individual = this.gedcomIndex.individuals.get(id);
+      if (!individual) return;
+
+      // Find family where this person is a child
+      const famcTag = individual.children?.find(c => c.tag === 'FAMC');
+      if (!famcTag) return;
+
+      const familyId = famcTag.data;
+      const family = this.gedcomIndex.families.get(familyId);
+      if (!family) return;
+
+      // Get parents
+      const husbTag = family.children?.find(c => c.tag === 'HUSB');
+      const wifeTag = family.children?.find(c => c.tag === 'WIFE');
+
+      if (husbTag) {
+        const fatherId = husbTag.data;
+        const father = this.gedcomIndex.individuals.get(fatherId);
+        if (father) {
+          ancestors.push({
+            id: fatherId,
+            name: this.extractName(father),
+            relationship: 'Father',
+            generation,
+          });
+          getParents(fatherId, generation + 1);
+        }
+      }
+
+      if (wifeTag) {
+        const motherId = wifeTag.data;
+        const mother = this.gedcomIndex.individuals.get(motherId);
+        if (mother) {
+          ancestors.push({
+            id: motherId,
+            name: this.extractName(mother),
+            relationship: 'Mother',
+            generation,
+          });
+          getParents(motherId, generation + 1);
+        }
+      }
+    };
+
+    getParents(individualId, 1);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ ancestors, count: ancestors.length }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Get descendants of a person
+   */
+  async gedcomGetDescendants(individualId, generations = 3) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const descendants = [];
+    const visited = new Set();
+
+    const getChildren = (id, generation) => {
+      if (generation > generations || visited.has(id)) return;
+      visited.add(id);
+
+      const individual = this.gedcomIndex.individuals.get(id);
+      if (!individual) return;
+
+      // Find families where this person is a spouse
+      const famsTags = individual.children?.filter(c => c.tag === 'FAMS') || [];
+
+      for (const famsTag of famsTags) {
+        const familyId = famsTag.data;
+        const family = this.gedcomIndex.families.get(familyId);
+        if (!family) continue;
+
+        // Get children
+        const childTags = family.children?.filter(c => c.tag === 'CHIL') || [];
+
+        for (const childTag of childTags) {
+          const childId = childTag.data;
+          const child = this.gedcomIndex.individuals.get(childId);
+          if (child) {
+            descendants.push({
+              id: childId,
+              name: this.extractName(child),
+              generation,
+            });
+            getChildren(childId, generation + 1);
+          }
+        }
+      }
+    };
+
+    getChildren(individualId, 1);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ descendants, count: descendants.length }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Get immediate family (parents, spouse(s), children)
+   */
+  async gedcomGetFamily(individualId) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individual = this.gedcomIndex.individuals.get(individualId);
+    if (!individual) {
+      throw new Error(`Individual ${individualId} not found.`);
+    }
+
+    const family = {
+      person: {
+        id: individualId,
+        name: this.extractName(individual),
+      },
+      parents: [],
+      spouses: [],
+      children: [],
+    };
+
+    // Get parents
+    const famcTag = individual.children?.find(c => c.tag === 'FAMC');
+    if (famcTag) {
+      const parentFamily = this.gedcomIndex.families.get(famcTag.data);
+      if (parentFamily) {
+        const husbTag = parentFamily.children?.find(c => c.tag === 'HUSB');
+        const wifeTag = parentFamily.children?.find(c => c.tag === 'WIFE');
+
+        if (husbTag) {
+          const father = this.gedcomIndex.individuals.get(husbTag.data);
+          if (father) {
+            family.parents.push({
+              id: husbTag.data,
+              name: this.extractName(father),
+              relation: 'Father',
+            });
+          }
+        }
+
+        if (wifeTag) {
+          const mother = this.gedcomIndex.individuals.get(wifeTag.data);
+          if (mother) {
+            family.parents.push({
+              id: wifeTag.data,
+              name: this.extractName(mother),
+              relation: 'Mother',
+            });
+          }
+        }
+      }
+    }
+
+    // Get spouses and children
+    const famsTags = individual.children?.filter(c => c.tag === 'FAMS') || [];
+    for (const famsTag of famsTags) {
+      const spouseFamily = this.gedcomIndex.families.get(famsTag.data);
+      if (!spouseFamily) continue;
+
+      // Get spouse
+      const husbTag = spouseFamily.children?.find(c => c.tag === 'HUSB');
+      const wifeTag = spouseFamily.children?.find(c => c.tag === 'WIFE');
+
+      const spouseId = (husbTag?.data === individualId) ? wifeTag?.data : husbTag?.data;
+      if (spouseId) {
+        const spouse = this.gedcomIndex.individuals.get(spouseId);
+        if (spouse) {
+          family.spouses.push({
+            id: spouseId,
+            name: this.extractName(spouse),
+          });
+        }
+      }
+
+      // Get children
+      const childTags = spouseFamily.children?.filter(c => c.tag === 'CHIL') || [];
+      for (const childTag of childTags) {
+        const child = this.gedcomIndex.individuals.get(childTag.data);
+        if (child) {
+          family.children.push({
+            id: childTag.data,
+            name: this.extractName(child),
+          });
+        }
+      }
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(family, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Generate narrative from GEDCOM data
+   */
+  async gedcomGenerateNarrative(args) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const { individualId, includeWorldEvents = true, includeRegionalHistory = true } = args;
+
+    const individual = this.gedcomIndex.individuals.get(individualId);
+    if (!individual) {
+      throw new Error(`Individual ${individualId} not found.`);
+    }
+
+    // Extract data for narrative
+    const name = this.extractName(individual);
+    const events = this.extractEvents(individual);
+    const birthEvent = events.find(e => e.type === 'Birth');
+    const deathEvent = events.find(e => e.type === 'Death');
+
+    const personData = {
+      name,
+      birthDate: birthEvent?.date || '',
+      birthPlace: birthEvent?.location || '',
+      deathDate: deathEvent?.date || '',
+      deathPlace: deathEvent?.location || '',
+      events: events.filter(e => e.type !== 'Birth' && e.type !== 'Death'),
+    };
+
+    // Use existing narrative generator
+    return await this.generateNarrative({
+      personData,
+      includeWorldEvents,
+      includeRegionalHistory,
+    });
   }
 
   async cleanup() {
