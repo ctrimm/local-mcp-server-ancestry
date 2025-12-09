@@ -357,6 +357,74 @@ Compare and contrast the life experiences of siblings.
 - Differences analysis (lifespan variance, locations, family size, occupations)
 - Individual life paths for each sibling
 
+#### `gedcom_generational_comparison`
+Compare experiences across generations (parent vs child, grandparent vs grandchild).
+
+```json
+{
+  "olderGenerationId": "@I123@",
+  "youngerGenerationId": "@I456@"
+}
+```
+
+**Output includes:**
+- Comparison table with key statistics
+- Historical context (era differences, geographic changes)
+- Life circumstances comparison (longevity, family size, migration)
+- Generational changes identified
+
+#### `gedcom_ask_about_person`
+Answer natural language questions about a person.
+
+```json
+{
+  "individualId": "@I123@",
+  "question": "Where did they live?"
+}
+```
+
+**Supported question types:**
+- Birth/Death: "When was X born?", "Where did they die?"
+- Marriage: "Did they marry?", "When did they get married?"
+- Children: "How many children did they have?"
+- Locations: "Where did they live?"
+- Age/Lifespan: "How old were they?", "How long did they live?"
+- Occupation: "What did they do for work?"
+- Migration: "Did they immigrate?"
+- Parents: "Who were their parents?"
+
+#### `gedcom_location_history`
+Get historical information about places where a person lived.
+
+```json
+{
+  "individualId": "@I123@"
+}
+```
+
+**Output includes:**
+- Chronological location timeline
+- Event details for each location
+- Historical context for each place (based on country/region patterns)
+- Geographic context clues
+
+#### `gedcom_era_context`
+Describe what life was like during a person's lifetime.
+
+```json
+{
+  "individualId": "@I123@",
+  "includeWorldEvents": true
+}
+```
+
+**Output includes:**
+- Historical era classification
+- Major world events during their lifetime (Civil War, WWI, WWII, etc.)
+- Daily life and society description
+- Technology and innovation timeline
+- Context appropriate to their birth/death years
+
 ## How to Export GEDCOM from Ancestry.com
 
 1. Log in to Ancestry.com
@@ -385,6 +453,11 @@ Once configured, you can use natural language:
 "Trace the migration story for @I123@ going back 4 generations"
 "Create a family saga for @I123@, @I456@, and @I789@"
 "Compare the lives of siblings @I123@ and @I456@"
+"Compare parent @I123@ with child @I456@ across generations"
+"When was @I123@ born?" (Q&A tool)
+"How many children did @I123@ have?" (Q&A tool)
+"Tell me about the places where @I123@ lived"
+"What was life like during @I123@'s lifetime?"
 ```
 
 **Using Ancestry.com web scraping:**

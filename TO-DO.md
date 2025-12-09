@@ -1,8 +1,9 @@
 # TODO: Ancestry MCP Server
 
 ## Recently Completed ✅
-- [x] **GEDCOM File Support** - Full implementation with 12 tools for storytelling
-- [x] **Storytelling Tools (Phase 2 Complete)** - Relationship explainer, life summary (4 styles), migration story, family saga, sibling comparison
+- [x] **GEDCOM File Support** - Full implementation with 16 tools for storytelling and context
+- [x] **Storytelling Tools (Complete)** - All storytelling features: relationship explainer, life summary (4 styles), migration story, family saga, sibling comparison, generational comparison, Q&A tool
+- [x] **Context Enrichment Tools** - Location history and era context for rich historical narratives
 - [x] **Security Fix** - Updated MCP SDK from 0.6.0 to 1.24.3 (fixed DNS rebinding vulnerability)
 - [x] **Session Persistence** - Saves login cookies to `.ancestry-session.json`
 - [x] **Screenshot Debugging** - Automatically captures screenshots on errors
@@ -16,21 +17,21 @@
 *Focus: Help AI models parse genealogy data and create compelling stories for users*
 
 ### Interactive Q&A Tools
-- [ ] **gedcom_ask_about_person** - Answer natural language questions about a person (e.g., "Where did they live?", "How many children?")
+- [x] **gedcom_ask_about_person** - Answer natural language questions about a person (e.g., "Where did they live?", "How many children?")
 - [x] **gedcom_relationship_explainer** - Calculate and explain relationships between any two people with narrative description
 - [x] **gedcom_life_summary** - Generate different narrative styles (brief, detailed, chronological, thematic)
 
 ### Multi-Person Narratives
 - [x] **gedcom_family_saga** - Generate chronological narrative spanning multiple family members
 - [x] **gedcom_sibling_comparison** - Compare and contrast life experiences of siblings
-- [ ] **gedcom_generational_comparison** - Compare experiences across generations (parent vs child)
+- [x] **gedcom_generational_comparison** - Compare experiences across generations (parent vs child)
 - [x] **gedcom_migration_story** - Trace family movements over generations with narrative context
 
 ### Context Enrichment
 - [ ] **gedcom_enrich_events** - Add historical/cultural context to specific life events
 - [ ] **gedcom_occupation_context** - Explain what their occupation meant in that era
-- [ ] **gedcom_location_history** - Get historical info about places they lived
-- [ ] **gedcom_era_context** - Describe what life was like during their lifetime
+- [x] **gedcom_location_history** - Get historical info about places they lived
+- [x] **gedcom_era_context** - Describe what life was like during their lifetime
 
 ### Timeline Tools
 - [ ] **gedcom_timeline_comparison** - Compare timelines of multiple people side-by-side
@@ -223,26 +224,28 @@
 3. ✅ Basic narrative generation
 4. ✅ Session persistence and error handling
 
-### Phase 2 ✅ MOSTLY COMPLETE - Storytelling Tools
+### Phase 2 ✅ COMPLETE - Storytelling Tools
 **Goal: Help AI models create compelling stories from genealogy data**
 1. ✅ **gedcom_relationship_explainer** - Calculate how people are related with narrative explanation
 2. ✅ **gedcom_life_summary** - Multiple narrative styles (brief/detailed/chronological/thematic)
 3. ✅ **gedcom_family_saga** - Multi-person chronological narratives
 4. ✅ **gedcom_sibling_comparison** - Compare life experiences of siblings
 5. ✅ **gedcom_migration_story** - Track family movements over generations
+6. ✅ **gedcom_generational_comparison** - Compare parent vs child across generations
+7. ✅ **gedcom_ask_about_person** - Natural language Q&A about individuals
 
-### Phase 3 - Context Enrichment
-1. Integrate web search for historical context
-2. **gedcom_occupation_context** - Explain occupations in historical context
-3. **gedcom_location_history** - Historical info about places
-4. **gedcom_era_context** - What life was like during their lifetime
-5. Add narrative templates (immigration, military, pioneer stories)
+### Phase 3 ✅ PARTIALLY COMPLETE - Context Enrichment
+1. [ ] Integrate web search for historical context
+2. [ ] **gedcom_occupation_context** - Explain occupations in historical context
+3. ✅ **gedcom_location_history** - Historical info about places (with built-in context)
+4. ✅ **gedcom_era_context** - What life was like during their lifetime (comprehensive)
+5. [ ] Add narrative templates (immigration, military, pioneer stories)
 
-### Phase 4 - Interactive Features
-1. **gedcom_ask_about_person** - Natural language Q&A about individuals
-2. **gedcom_timeline_comparison** - Side-by-side timeline comparisons
-3. **gedcom_generational_comparison** - Compare parent vs child experiences
-4. Timeline and event significance tools
+### Phase 4 - Additional Interactive Features
+1. **gedcom_timeline_comparison** - Side-by-side timeline comparisons
+2. **gedcom_family_timeline** - Create combined timeline for entire family unit
+3. **gedcom_event_significance** - Explain significance of events in historical context
+4. **gedcom_enrich_events** - Add context to specific life events
 
 ### Phase 5 - Web Scraping Enhancement
 1. Test and fix all Ancestry.com selectors

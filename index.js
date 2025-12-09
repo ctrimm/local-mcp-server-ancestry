@@ -535,6 +535,74 @@ class AncestryMCPServer {
             required: ['siblingIds'],
           },
         },
+        {
+          name: 'gedcom_generational_comparison',
+          description: 'Compare experiences across generations (parent vs child, grandparent vs grandchild), showing how life changed over time',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              olderGenerationId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID of the older generation person (parent/grandparent)',
+              },
+              youngerGenerationId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID of the younger generation person (child/grandchild)',
+              },
+            },
+            required: ['olderGenerationId', 'youngerGenerationId'],
+          },
+        },
+        {
+          name: 'gedcom_ask_about_person',
+          description: 'Answer natural language questions about a person (e.g., "Where did they live?", "How many children?", "When did they marry?")',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+              question: {
+                type: 'string',
+                description: 'Natural language question about the person',
+              },
+            },
+            required: ['individualId', 'question'],
+          },
+        },
+        {
+          name: 'gedcom_location_history',
+          description: 'Get historical information about places where a person lived, providing geographic and historical context',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
+        {
+          name: 'gedcom_era_context',
+          description: 'Describe what life was like during a person\'s lifetime, including major historical events and social conditions',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              individualId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID',
+              },
+              includeWorldEvents: {
+                type: 'boolean',
+                description: 'Include major world events during their lifetime (default: true)',
+              },
+            },
+            required: ['individualId'],
+          },
+        },
       ],
     }));
 
@@ -600,6 +668,18 @@ class AncestryMCPServer {
 
           case 'gedcom_sibling_comparison':
             return await this.gedcomSiblingComparison(args.siblingIds);
+
+          case 'gedcom_generational_comparison':
+            return await this.gedcomGenerationalComparison(args.olderGenerationId, args.youngerGenerationId);
+
+          case 'gedcom_ask_about_person':
+            return await this.gedcomAskAboutPerson(args.individualId, args.question);
+
+          case 'gedcom_location_history':
+            return await this.gedcomLocationHistory(args.individualId);
+
+          case 'gedcom_era_context':
+            return await this.gedcomEraContext(args.individualId, args.includeWorldEvents !== false);
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -3170,6 +3250,717 @@ class AncestryMCPServer {
     }
 
     return path;
+  }
+
+  /**
+   * Compare generations (parent vs child, grandparent vs grandchild)
+   */
+  async gedcomGenerationalComparison(olderGenerationId, youngerGenerationId) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const olderPerson = this.gedcomIndex.individuals.get(olderGenerationId);
+    const youngerPerson = this.gedcomIndex.individuals.get(youngerGenerationId);
+
+    if (!olderPerson) throw new Error(`Individual ${olderGenerationId} not found.`);
+    if (!youngerPerson) throw new Error(`Individual ${youngerGenerationId} not found.`);
+
+    // Extract data for both people
+    const olderData = this.extractPersonComparisonData(olderGenerationId);
+    const youngerData = this.extractPersonComparisonData(youngerGenerationId);
+
+    // Determine relationship
+    const relationship = this.findRelationship(olderGenerationId, youngerGenerationId);
+
+    let comparison = `# Generational Comparison\n\n`;
+    comparison += `Comparing ${olderData.name} and ${youngerData.name}\n\n`;
+
+    if (relationship) {
+      comparison += `**Relationship**: ${relationship.description}\n\n`;
+    }
+
+    // Quick comparison table
+    comparison += `## Overview\n\n`;
+    comparison += `| Aspect | ${olderData.name} | ${youngerData.name} |\n`;
+    comparison += `|--------|${'-'.repeat(olderData.name.length + 2)}|${'-'.repeat(youngerData.name.length + 2)}|\n`;
+    comparison += `| Born | ${olderData.birthYear || '?'} | ${youngerData.birthYear || '?'} |\n`;
+    comparison += `| Died | ${olderData.deathYear || '?'} | ${youngerData.deathYear || '?'} |\n`;
+    comparison += `| Lifespan | ${olderData.lifespan ? olderData.lifespan + ' years' : '?'} | ${youngerData.lifespan ? youngerData.lifespan + ' years' : '?'} |\n`;
+    comparison += `| Birthplace | ${olderData.birthPlace || 'Unknown'} | ${youngerData.birthPlace || 'Unknown'} |\n`;
+    comparison += `| Married | ${olderData.marriages > 0 ? 'Yes' : 'No'} | ${youngerData.marriages > 0 ? 'Yes' : 'No'} |\n`;
+    comparison += `| Children | ${olderData.children} | ${youngerData.children} |\n`;
+    comparison += `| Migrations | ${olderData.migrations} | ${youngerData.migrations} |\n`;
+    comparison += `\n`;
+
+    // Historical context
+    comparison += `## Historical Context\n\n`;
+    comparison += this.compareGenerationalContext(olderData, youngerData);
+
+    // Life circumstances
+    comparison += `## Life Circumstances\n\n`;
+    comparison += this.compareLifeCircumstances(olderData, youngerData);
+
+    // Changes across generations
+    comparison += `## Changes Across Generations\n\n`;
+    comparison += this.identifyGenerationalChanges(olderData, youngerData);
+
+    return {
+      content: [{
+        type: 'text',
+        text: comparison,
+      }],
+    };
+  }
+
+  /**
+   * Extract person data for generational comparison
+   */
+  extractPersonComparisonData(individualId) {
+    const person = this.gedcomIndex.individuals.get(individualId);
+    const name = this.extractName(person);
+    const events = this.extractEvents(person);
+    const birthEvent = events.find(e => e.type === 'Birth');
+    const deathEvent = events.find(e => e.type === 'Death');
+
+    return {
+      id: individualId,
+      name,
+      birthYear: this.extractYear(birthEvent?.date),
+      deathYear: this.extractYear(deathEvent?.date),
+      birthPlace: birthEvent?.location,
+      deathPlace: deathEvent?.location,
+      lifespan: (birthEvent && deathEvent) ?
+        (this.extractYear(deathEvent.date) - this.extractYear(birthEvent.date)) : null,
+      events,
+      marriages: events.filter(e => e.type === 'Marriage').length,
+      children: this.countChildren(individualId),
+      migrations: events.filter(e => ['Immigration', 'Emigration', 'Residence'].includes(e.type)).length,
+      occupations: events.filter(e => e.type === 'Occupation'),
+      military: events.filter(e => e.type === 'Military').length > 0,
+    };
+  }
+
+  /**
+   * Compare generational historical context
+   */
+  compareGenerationalContext(older, younger) {
+    let context = '';
+
+    if (older.birthYear && younger.birthYear) {
+      const yearGap = younger.birthYear - older.birthYear;
+      context += `${older.name} was born ${yearGap} years before ${younger.name}.\n\n`;
+
+      // Era differences
+      if (older.birthYear < 1900 && younger.birthYear >= 1900) {
+        context += `${older.name} was born in the **19th century**, while ${younger.name} was born in the **20th century**. `;
+        context += `This generational shift brought dramatic changes in technology, society, and daily life.\n\n`;
+      }
+    }
+
+    // Geographic changes
+    if (older.birthPlace && younger.birthPlace) {
+      if (older.birthPlace === younger.birthPlace) {
+        context += `Both were born in ${older.birthPlace}, showing geographic stability across generations.\n\n`;
+      } else {
+        context += `**Geographic change**: ${older.name} was born in ${older.birthPlace}, while ${younger.name} was born in ${younger.birthPlace}. `;
+        context += `This represents a family migration between generations.\n\n`;
+      }
+    }
+
+    return context;
+  }
+
+  /**
+   * Compare life circumstances
+   */
+  compareLifeCircumstances(older, younger) {
+    let circumstances = '';
+
+    // Lifespan
+    if (older.lifespan && younger.lifespan) {
+      if (younger.lifespan > older.lifespan) {
+        circumstances += `**Longevity**: ${younger.name} lived ${younger.lifespan - older.lifespan} years longer than ${older.name}, `;
+        circumstances += `potentially reflecting improved healthcare and living conditions.\n\n`;
+      } else if (older.lifespan > younger.lifespan) {
+        circumstances += `**Longevity**: ${older.name} lived ${older.lifespan - younger.lifespan} years longer than ${younger.name}.\n\n`;
+      } else {
+        circumstances += `**Longevity**: Both lived similar lifespans (${older.lifespan} years).\n\n`;
+      }
+    }
+
+    // Family size
+    if (older.children !== younger.children) {
+      circumstances += `**Family size**: ${older.name} had ${older.children} children, while ${younger.name} had ${younger.children} children`;
+      if (younger.children < older.children) {
+        circumstances += `, reflecting a trend toward smaller families across generations`;
+      }
+      circumstances += `.\n\n`;
+    }
+
+    // Migration patterns
+    if (older.migrations !== younger.migrations) {
+      circumstances += `**Migration**: `;
+      if (older.migrations > younger.migrations) {
+        circumstances += `${older.name} migrated ${older.migrations} time(s), while ${younger.name} was more settled (${younger.migrations} migrations). `;
+        circumstances += `The older generation may have been seeking opportunities.\n\n`;
+      } else {
+        circumstances += `${younger.name} migrated more frequently (${younger.migrations} times) than ${older.name} (${older.migrations} times), `;
+        circumstances += `possibly reflecting increased mobility in later eras.\n\n`;
+      }
+    }
+
+    return circumstances;
+  }
+
+  /**
+   * Identify generational changes
+   */
+  identifyGenerationalChanges(older, younger) {
+    const changes = [];
+
+    // Birth location change
+    if (older.birthPlace && younger.birthPlace && older.birthPlace !== younger.birthPlace) {
+      changes.push(`The family moved from ${older.birthPlace} to ${younger.birthPlace} between generations`);
+    }
+
+    // Marriage patterns
+    if (older.marriages === 0 && younger.marriages > 0) {
+      changes.push(`${younger.name} married, while ${older.name}'s marriage records are not available`);
+    } else if (older.marriages > 1 || younger.marriages > 1) {
+      changes.push(`Multiple marriages were present in the family`);
+    }
+
+    // Occupation changes
+    if (older.occupations.length > 0 && younger.occupations.length > 0) {
+      const olderOccs = older.occupations.map(o => o.location || 'occupation');
+      const youngerOccs = younger.occupations.map(o => o.location || 'occupation');
+      changes.push(`Occupational shift: ${older.name} worked as ${olderOccs.join(', ')}, while ${younger.name} worked as ${youngerOccs.join(', ')}`);
+    }
+
+    // Military service
+    if (older.military !== younger.military) {
+      if (younger.military) {
+        changes.push(`${younger.name} served in the military, unlike ${older.name}`);
+      } else {
+        changes.push(`${older.name} served in the military, unlike ${younger.name}`);
+      }
+    }
+
+    if (changes.length === 0) {
+      return 'Limited data available to identify specific generational changes.\n\n';
+    }
+
+    return changes.map(c => `- ${c}`).join('\n') + '\n\n';
+  }
+
+  /**
+   * Answer natural language questions about a person
+   */
+  async gedcomAskAboutPerson(individualId, question) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const person = this.gedcomIndex.individuals.get(individualId);
+    if (!person) {
+      throw new Error(`Individual ${individualId} not found.`);
+    }
+
+    const name = this.extractName(person);
+    const events = this.extractEvents(person);
+
+    // Parse question and extract answer
+    const answer = this.parseQuestionAndAnswer(question, individualId, name, events);
+
+    return {
+      content: [{
+        type: 'text',
+        text: `**Question about ${name}**: ${question}\n\n**Answer**: ${answer}`,
+      }],
+    };
+  }
+
+  /**
+   * Parse question and generate answer
+   */
+  parseQuestionAndAnswer(question, individualId, name, events) {
+    const q = question.toLowerCase();
+
+    // Birth questions
+    if (q.includes('when') && (q.includes('born') || q.includes('birth'))) {
+      const birthEvent = events.find(e => e.type === 'Birth');
+      if (birthEvent?.date) {
+        return `${name} was born on ${birthEvent.date}${birthEvent.location ? ` in ${birthEvent.location}` : ''}.`;
+      }
+      return `Birth date for ${name} is not recorded in the available data.`;
+    }
+
+    if (q.includes('where') && (q.includes('born') || q.includes('birth'))) {
+      const birthEvent = events.find(e => e.type === 'Birth');
+      if (birthEvent?.location) {
+        return `${name} was born in ${birthEvent.location}${birthEvent.date ? ` on ${birthEvent.date}` : ''}.`;
+      }
+      return `Birth location for ${name} is not recorded in the available data.`;
+    }
+
+    // Death questions
+    if (q.includes('when') && (q.includes('died') || q.includes('death') || q.includes('pass'))) {
+      const deathEvent = events.find(e => e.type === 'Death');
+      if (deathEvent?.date) {
+        return `${name} died on ${deathEvent.date}${deathEvent.location ? ` in ${deathEvent.location}` : ''}.`;
+      }
+      return `Death date for ${name} is not recorded in the available data.`;
+    }
+
+    if (q.includes('where') && (q.includes('died') || q.includes('death'))) {
+      const deathEvent = events.find(e => e.type === 'Death');
+      if (deathEvent?.location) {
+        return `${name} died in ${deathEvent.location}${deathEvent.date ? ` on ${deathEvent.date}` : ''}.`;
+      }
+      return `Death location for ${name} is not recorded in the available data.`;
+    }
+
+    // Marriage questions
+    if (q.includes('marr') || q.includes('spouse') || q.includes('wife') || q.includes('husband')) {
+      const marriages = events.filter(e => e.type === 'Marriage');
+      if (marriages.length > 0) {
+        let answer = `${name} married ${marriages.length} time(s):\n`;
+        for (const marriage of marriages) {
+          answer += `- Marriage`;
+          if (marriage.date) answer += ` on ${marriage.date}`;
+          if (marriage.location) answer += ` in ${marriage.location}`;
+          answer += '\n';
+        }
+        return answer;
+      }
+      return `No marriage records found for ${name} in the available data.`;
+    }
+
+    // Children questions
+    if (q.includes('child') || q.includes('kids') || q.includes('offspring')) {
+      const childCount = this.countChildren(individualId);
+      if (childCount > 0) {
+        return `${name} had ${childCount} child${childCount !== 1 ? 'ren' : ''}.`;
+      }
+      return `No children records found for ${name} in the available data.`;
+    }
+
+    // Location/residence questions
+    if (q.includes('where') && (q.includes('live') || q.includes('reside'))) {
+      const residences = events.filter(e => e.type === 'Residence');
+      const birthEvent = events.find(e => e.type === 'Birth');
+      const deathEvent = events.find(e => e.type === 'Death');
+
+      const locations = [];
+      if (birthEvent?.location) locations.push(birthEvent.location);
+      for (const res of residences) {
+        if (res.location && !locations.includes(res.location)) {
+          locations.push(res.location);
+        }
+      }
+      if (deathEvent?.location && !locations.includes(deathEvent.location)) {
+        locations.push(deathEvent.location);
+      }
+
+      if (locations.length > 0) {
+        return `${name} lived in: ${locations.join(', ')}.`;
+      }
+      return `No residence information available for ${name}.`;
+    }
+
+    // Age/lifespan questions
+    if (q.includes('how old') || q.includes('age') || q.includes('lifespan') || q.includes('how long')) {
+      const birthEvent = events.find(e => e.type === 'Birth');
+      const deathEvent = events.find(e => e.type === 'Death');
+
+      if (birthEvent?.date && deathEvent?.date) {
+        const birthYear = this.extractYear(birthEvent.date);
+        const deathYear = this.extractYear(deathEvent.date);
+        if (birthYear && deathYear) {
+          const lifespan = deathYear - birthYear;
+          return `${name} lived for approximately ${lifespan} years (${birthYear}-${deathYear}).`;
+        }
+      }
+      return `Lifespan information for ${name} is incomplete in the available data.`;
+    }
+
+    // Occupation questions
+    if (q.includes('work') || q.includes('job') || q.includes('occupation') || q.includes('profession')) {
+      const occupations = events.filter(e => e.type === 'Occupation');
+      if (occupations.length > 0) {
+        let answer = `${name}'s occupation(s):\n`;
+        for (const occ of occupations) {
+          answer += `- ${occ.location || 'Occupation recorded'}`;
+          if (occ.date) answer += ` (${occ.date})`;
+          answer += '\n';
+        }
+        return answer;
+      }
+      return `No occupation information available for ${name}.`;
+    }
+
+    // Migration questions
+    if (q.includes('migrat') || q.includes('immigrat') || q.includes('emigrat') || q.includes('move')) {
+      const migrations = events.filter(e => ['Immigration', 'Emigration', 'Residence'].includes(e.type));
+      if (migrations.length > 0) {
+        let answer = `${name}'s migration history:\n`;
+        for (const mig of migrations) {
+          answer += `- ${mig.type}`;
+          if (mig.date) answer += ` (${mig.date})`;
+          if (mig.location) answer += `: ${mig.location}`;
+          answer += '\n';
+        }
+        return answer;
+      }
+      return `No migration records found for ${name}.`;
+    }
+
+    // Parents questions
+    if (q.includes('parent') || q.includes('mother') || q.includes('father')) {
+      const famcTag = this.gedcomIndex.individuals.get(individualId).children?.find(c => c.tag === 'FAMC');
+      if (famcTag) {
+        const parentFamily = this.gedcomIndex.families.get(famcTag.data);
+        if (parentFamily) {
+          const parents = [];
+          const husbTag = parentFamily.children?.find(c => c.tag === 'HUSB');
+          const wifeTag = parentFamily.children?.find(c => c.tag === 'WIFE');
+
+          if (husbTag) {
+            const father = this.gedcomIndex.individuals.get(husbTag.data);
+            if (father) parents.push(`Father: ${this.extractName(father)}`);
+          }
+          if (wifeTag) {
+            const mother = this.gedcomIndex.individuals.get(wifeTag.data);
+            if (mother) parents.push(`Mother: ${this.extractName(mother)}`);
+          }
+
+          if (parents.length > 0) {
+            return `${name}'s parents:\n` + parents.map(p => `- ${p}`).join('\n');
+          }
+        }
+      }
+      return `Parent information for ${name} is not available.`;
+    }
+
+    // Default: provide general summary
+    return `I couldn't find a specific answer to that question. Here's what I know about ${name}:\n\n` +
+           this.generateBriefSummary(name,
+             events.find(e => e.type === 'Birth'),
+             events.find(e => e.type === 'Death'),
+             events);
+  }
+
+  /**
+   * Get historical information about locations where person lived
+   */
+  async gedcomLocationHistory(individualId) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const person = this.gedcomIndex.individuals.get(individualId);
+    if (!person) {
+      throw new Error(`Individual ${individualId} not found.`);
+    }
+
+    const name = this.extractName(person);
+    const events = this.extractEvents(person);
+
+    // Extract all unique locations
+    const locations = new Set();
+    const locationEvents = [];
+
+    for (const event of events) {
+      if (event.location) {
+        locations.add(event.location);
+        locationEvents.push({
+          location: event.location,
+          type: event.type,
+          date: event.date,
+          year: this.extractYear(event.date),
+        });
+      }
+    }
+
+    if (locations.size === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: `No location information available for ${name}.`,
+        }],
+      };
+    }
+
+    let history = `# Location History for ${name}\n\n`;
+    history += `${name} had connections to ${locations.size} location(s) throughout their life.\n\n`;
+
+    // Sort events by year
+    locationEvents.sort((a, b) => {
+      if (!a.year && !b.year) return 0;
+      if (!a.year) return 1;
+      if (!b.year) return -1;
+      return a.year - b.year;
+    });
+
+    // Chronological location timeline
+    history += `## Chronological Location Timeline\n\n`;
+    for (const event of locationEvents) {
+      history += `- **${event.year || 'Unknown date'}**: ${event.type} in ${event.location}\n`;
+    }
+    history += `\n`;
+
+    // Detailed location information
+    history += `## Location Details\n\n`;
+    for (const location of locations) {
+      history += `### ${location}\n\n`;
+
+      const eventsAtLocation = locationEvents.filter(e => e.location === location);
+      history += `${name} had ${eventsAtLocation.length} recorded event(s) at this location:\n`;
+      for (const event of eventsAtLocation) {
+        history += `- ${event.type}`;
+        if (event.date) history += ` (${event.date})`;
+        history += '\n';
+      }
+      history += '\n';
+
+      // Add geographic/historical context
+      history += this.getLocationContext(location);
+      history += '\n';
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: history,
+      }],
+    };
+  }
+
+  /**
+   * Get context for a location
+   */
+  getLocationContext(location) {
+    let context = '**Historical Context**: ';
+
+    // Parse location for context clues
+    const loc = location.toLowerCase();
+
+    // Country-specific context
+    if (loc.includes('england') || loc.includes('london') || loc.includes('uk')) {
+      context += 'England was a major industrial and colonial power during the 19th and early 20th centuries. ';
+    } else if (loc.includes('ireland')) {
+      context += 'Ireland experienced significant emigration, particularly during and after the Great Famine (1845-1852). ';
+    } else if (loc.includes('germany') || loc.includes('prussia')) {
+      context += 'Germany underwent unification in 1871 and was a major European power. Many Germans emigrated to America in the 19th century. ';
+    } else if (loc.includes('italy')) {
+      context += 'Italy saw massive emigration between 1880-1920, with millions seeking opportunities abroad. ';
+    } else if (loc.includes('new york')) {
+      context += 'New York was a major port of entry for immigrants and a rapidly growing industrial center. Ellis Island processed millions of arrivals. ';
+    } else if (loc.includes('california')) {
+      context += 'California attracted settlers during the Gold Rush (1849) and continued to grow with opportunities in agriculture, mining, and later technology. ';
+    } else if (loc.includes('pennsylvania')) {
+      context += 'Pennsylvania was a major industrial state, known for coal mining, steel production, and manufacturing. ';
+    } else if (loc.includes('massachusetts') || loc.includes('boston')) {
+      context += 'Massachusetts was a center of early American history, industry, and immigration, particularly for Irish and Italian immigrants. ';
+    } else if (loc.includes('chicago')) {
+      context += 'Chicago grew rapidly as a railroad hub and industrial center, attracting immigrants from across Europe. ';
+    } else {
+      context += 'This location played a role in the family\'s geographic journey. ';
+    }
+
+    context += '\n\n';
+    return context;
+  }
+
+  /**
+   * Describe what life was like during person's lifetime
+   */
+  async gedcomEraContext(individualId, includeWorldEvents = true) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const person = this.gedcomIndex.individuals.get(individualId);
+    if (!person) {
+      throw new Error(`Individual ${individualId} not found.`);
+    }
+
+    const name = this.extractName(person);
+    const events = this.extractEvents(person);
+    const birthEvent = events.find(e => e.type === 'Birth');
+    const deathEvent = events.find(e => e.type === 'Death');
+
+    const birthYear = this.extractYear(birthEvent?.date);
+    const deathYear = this.extractYear(deathEvent?.date);
+
+    if (!birthYear) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Unable to determine era context for ${name} - birth year is not available.`,
+        }],
+      };
+    }
+
+    let context = `# Life and Times of ${name}\n\n`;
+    context += `## Overview\n\n`;
+
+    if (deathYear) {
+      context += `${name} lived from ${birthYear} to ${deathYear} (approximately ${deathYear - birthYear} years).\n\n`;
+    } else {
+      context += `${name} was born in ${birthYear}.\n\n`;
+    }
+
+    // Era classification
+    context += `## Historical Era\n\n`;
+    context += this.classifyEra(birthYear, deathYear);
+
+    // Major events during lifetime
+    if (includeWorldEvents) {
+      context += `## Major Historical Events During ${name}'s Lifetime\n\n`;
+      context += this.getMajorEvents(birthYear, deathYear);
+    }
+
+    // Daily life context
+    context += `## Daily Life and Society\n\n`;
+    context += this.getDailyLifeContext(birthYear, deathYear);
+
+    // Technology and innovation
+    context += `## Technology and Innovation\n\n`;
+    context += this.getTechnologyContext(birthYear, deathYear);
+
+    return {
+      content: [{
+        type: 'text',
+        text: context,
+      }],
+    };
+  }
+
+  /**
+   * Classify historical era
+   */
+  classifyEra(birthYear, deathYear) {
+    let era = '';
+
+    if (birthYear < 1800) {
+      era += `${name} was born in the **18th century**, during the Age of Enlightenment and before the Industrial Revolution.\n\n`;
+    } else if (birthYear >= 1800 && birthYear < 1850) {
+      era += `Born in the **early 19th century**, during the height of the Industrial Revolution and westward expansion in America.\n\n`;
+    } else if (birthYear >= 1850 && birthYear < 1900) {
+      era += `Born in the **mid-to-late 19th century**, an era of rapid industrialization, immigration, and social change.\n\n`;
+    } else if (birthYear >= 1900 && birthYear < 1920) {
+      era += `Born in the **early 20th century**, witnessing the end of the Victorian era and the tumultuous period of World War I.\n\n`;
+    } else if (birthYear >= 1920 && birthYear < 1945) {
+      era += `Born between the **World Wars**, experiencing the Roaring Twenties, Great Depression, and World War II.\n\n`;
+    } else if (birthYear >= 1945 && birthYear < 1965) {
+      era += `Born in the **post-World War II era**, during the Baby Boom and Cold War period.\n\n`;
+    } else if (birthYear >= 1965 && birthYear < 1980) {
+      era += `Born in the **late 20th century**, during the Civil Rights movement and the Space Age.\n\n`;
+    } else {
+      era += `Born in the **modern era**.\n\n`;
+    }
+
+    return era;
+  }
+
+  /**
+   * Get major historical events during lifetime
+   */
+  getMajorEvents(birthYear, deathYear) {
+    const events = [];
+    const endYear = deathYear || new Date().getFullYear();
+
+    // American Civil War
+    if (birthYear <= 1865 && endYear >= 1861) {
+      events.push(`**American Civil War (1861-1865)**: The deadliest conflict in American history, ending slavery`);
+    }
+
+    // Industrial Revolution
+    if (birthYear <= 1900 && endYear >= 1800) {
+      events.push(`**Industrial Revolution**: Transformation from agrarian to industrial society, with factories, railroads, and urbanization`);
+    }
+
+    // World War I
+    if (birthYear <= 1918 && endYear >= 1914) {
+      events.push(`**World War I (1914-1918)**: "The Great War" that reshaped global politics and society`);
+    }
+
+    // Great Depression
+    if (birthYear <= 1939 && endYear >= 1929) {
+      events.push(`**Great Depression (1929-1939)**: Severe worldwide economic depression affecting millions`);
+    }
+
+    // World War II
+    if (birthYear <= 1945 && endYear >= 1939) {
+      events.push(`**World War II (1939-1945)**: Global conflict that changed the world order`);
+    }
+
+    // Cold War
+    if (birthYear <= 1991 && endYear >= 1947) {
+      events.push(`**Cold War (1947-1991)**: Geopolitical tension between the US and Soviet Union`);
+    }
+
+    // Women's Suffrage
+    if (birthYear <= 1920 && endYear >= 1848) {
+      events.push(`**Women's Suffrage Movement**: Culminating in women gaining the right to vote (19th Amendment, 1920)`);
+    }
+
+    // Immigration waves
+    if (birthYear <= 1920 && endYear >= 1880) {
+      events.push(`**Mass Immigration (1880-1920)**: Over 20 million immigrants arrived in the United States`);
+    }
+
+    if (events.length === 0) {
+      return 'Historical events during this period are beyond the scope of this summary.\n\n';
+    }
+
+    return events.map(e => `- ${e}`).join('\n') + '\n\n';
+  }
+
+  /**
+   * Get daily life context
+   */
+  getDailyLifeContext(birthYear, deathYear) {
+    const midLife = birthYear + Math.floor((deathYear ? (deathYear - birthYear) / 2 : 30));
+
+    if (midLife < 1850) {
+      return `Life was largely rural and agricultural. Most people lived on farms, transportation was by horse, ` +
+             `and communication was limited to letters. Work was physically demanding, and life expectancy was shorter.\n\n`;
+    } else if (midLife < 1900) {
+      return `Society was transitioning from rural to urban. Railroads connected cities, factories provided employment, ` +
+             `but working conditions were often harsh. Gas lighting was replacing candles, but electricity was still rare.\n\n`;
+    } else if (midLife < 1945) {
+      return `Urban life was increasingly common. Electricity, telephones, and automobiles were transforming daily life. ` +
+             `Radio provided entertainment and news. However, economic instability and world wars created challenges.\n\n`;
+    } else {
+      return `Modern conveniences like television, refrigeration, and automobiles were becoming standard. ` +
+             `Suburban living expanded, and the middle class grew. Society was more mobile and connected than ever before.\n\n`;
+    }
+  }
+
+  /**
+   * Get technology context
+   */
+  getTechnologyContext(birthYear, deathYear) {
+    const technologies = [];
+    const endYear = deathYear || new Date().getFullYear();
+
+    if (birthYear <= 1876 && endYear >= 1876) technologies.push('Telephone invented (1876)');
+    if (birthYear <= 1879 && endYear >= 1879) technologies.push('Electric light bulb (1879)');
+    if (birthYear <= 1903 && endYear >= 1903) technologies.push('First airplane flight (1903)');
+    if (birthYear <= 1920 && endYear >= 1920) technologies.push('Commercial radio broadcasting began (1920)');
+    if (birthYear <= 1927 && endYear >= 1927) technologies.push('Television demonstrated (1927)');
+    if (birthYear <= 1945 && endYear >= 1945) technologies.push('Nuclear age began (1945)');
+    if (birthYear <= 1969 && endYear >= 1969) technologies.push('Moon landing (1969)');
+    if (birthYear <= 1989 && endYear >= 1989) technologies.push('World Wide Web invented (1989)');
+
+    if (technologies.length === 0) {
+      return 'Technological developments during this era are beyond the scope of this summary.\n\n';
+    }
+
+    return `Key innovations during this lifetime:\n` + technologies.map(t => `- ${t}`).join('\n') + '\n\n';
   }
 
   async cleanup() {
