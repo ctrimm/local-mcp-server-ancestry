@@ -394,7 +394,7 @@ Answer natural language questions about a person.
 - Parents: "Who were their parents?"
 
 #### `gedcom_location_history`
-Get historical information about places where a person lived.
+Returns structured JSON data about places where a person lived. The LLM uses this to provide rich historical context.
 
 ```json
 {
@@ -402,28 +402,28 @@ Get historical information about places where a person lived.
 }
 ```
 
-**Output includes:**
-- Chronological location timeline
-- Event details for each location
-- Historical context for each place (based on country/region patterns)
-- Geographic context clues
+**Returns JSON with:**
+- `locationCount`: Number of unique locations
+- `uniqueLocations`: Array of location names
+- `chronologicalEvents`: Array of events with location, type, date, year
+
+**Design note:** Returns data only - Claude provides historical context about these places using its knowledge.
 
 #### `gedcom_era_context`
-Describe what life was like during a person's lifetime.
+Returns structured JSON with lifetime data. The LLM uses this to describe what life was like during their era.
 
 ```json
 {
-  "individualId": "@I123@",
-  "includeWorldEvents": true
+  "individualId": "@I123@"
 }
 ```
 
-**Output includes:**
-- Historical era classification
-- Major world events during their lifetime (Civil War, WWI, WWII, etc.)
-- Daily life and society description
-- Technology and innovation timeline
-- Context appropriate to their birth/death years
+**Returns JSON with:**
+- `birthYear`, `deathYear`, `lifespan`
+- `birthPlace`, `deathPlace`
+- `allEvents`: Array of all life events with dates and locations
+
+**Design note:** Returns data only - Claude provides historical context about their era, major events, technology, and social conditions using its knowledge.
 
 ## How to Export GEDCOM from Ancestry.com
 

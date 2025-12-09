@@ -573,7 +573,7 @@ class AncestryMCPServer {
         },
         {
           name: 'gedcom_location_history',
-          description: 'Get historical information about places where a person lived, providing geographic and historical context',
+          description: 'Get structured data about places where a person lived. Returns JSON with locations, events, and chronological timeline. The LLM can use this data to provide rich historical context.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -587,7 +587,7 @@ class AncestryMCPServer {
         },
         {
           name: 'gedcom_era_context',
-          description: 'Describe what life was like during a person\'s lifetime, including major historical events and social conditions',
+          description: 'Get structured lifetime data for a person (birth/death years, lifespan, locations, events). Returns JSON that the LLM can use to provide historical context about their era.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -597,7 +597,7 @@ class AncestryMCPServer {
               },
               includeWorldEvents: {
                 type: 'boolean',
-                description: 'Include major world events during their lifetime (default: true)',
+                description: 'Deprecated parameter - kept for compatibility',
               },
             },
             required: ['individualId'],
@@ -3652,7 +3652,7 @@ class AncestryMCPServer {
   }
 
   /**
-   * Get historical information about locations where person lived
+   * Get location history data for a person (DATA ONLY - let LLM provide context)
    */
   async gedcomLocationHistory(individualId) {
     if (!this.gedcomData) {
@@ -3667,23 +3667,21 @@ class AncestryMCPServer {
     const name = this.extractName(person);
     const events = this.extractEvents(person);
 
-    // Extract all unique locations
-    const locations = new Set();
-    const locationEvents = [];
+    // Extract all unique locations with events
+    const locationData = [];
 
     for (const event of events) {
       if (event.location) {
-        locations.add(event.location);
-        locationEvents.push({
+        locationData.push({
           location: event.location,
-          type: event.type,
+          eventType: event.type,
           date: event.date,
           year: this.extractYear(event.date),
         });
       }
     }
 
-    if (locations.size === 0) {
+    if (locationData.length === 0) {
       return {
         content: [{
           type: 'text',
@@ -3692,89 +3690,35 @@ class AncestryMCPServer {
       };
     }
 
-    let history = `# Location History for ${name}\n\n`;
-    history += `${name} had connections to ${locations.size} location(s) throughout their life.\n\n`;
-
-    // Sort events by year
-    locationEvents.sort((a, b) => {
+    // Sort by year
+    locationData.sort((a, b) => {
       if (!a.year && !b.year) return 0;
       if (!a.year) return 1;
       if (!b.year) return -1;
       return a.year - b.year;
     });
 
-    // Chronological location timeline
-    history += `## Chronological Location Timeline\n\n`;
-    for (const event of locationEvents) {
-      history += `- **${event.year || 'Unknown date'}**: ${event.type} in ${event.location}\n`;
-    }
-    history += `\n`;
+    // Get unique locations
+    const uniqueLocations = [...new Set(locationData.map(l => l.location))];
 
-    // Detailed location information
-    history += `## Location Details\n\n`;
-    for (const location of locations) {
-      history += `### ${location}\n\n`;
-
-      const eventsAtLocation = locationEvents.filter(e => e.location === location);
-      history += `${name} had ${eventsAtLocation.length} recorded event(s) at this location:\n`;
-      for (const event of eventsAtLocation) {
-        history += `- ${event.type}`;
-        if (event.date) history += ` (${event.date})`;
-        history += '\n';
-      }
-      history += '\n';
-
-      // Add geographic/historical context
-      history += this.getLocationContext(location);
-      history += '\n';
-    }
+    // Return structured data as JSON
+    const result = {
+      name,
+      locationCount: uniqueLocations.length,
+      uniqueLocations,
+      chronologicalEvents: locationData,
+    };
 
     return {
       content: [{
         type: 'text',
-        text: history,
+        text: JSON.stringify(result, null, 2),
       }],
     };
   }
 
   /**
-   * Get context for a location
-   */
-  getLocationContext(location) {
-    let context = '**Historical Context**: ';
-
-    // Parse location for context clues
-    const loc = location.toLowerCase();
-
-    // Country-specific context
-    if (loc.includes('england') || loc.includes('london') || loc.includes('uk')) {
-      context += 'England was a major industrial and colonial power during the 19th and early 20th centuries. ';
-    } else if (loc.includes('ireland')) {
-      context += 'Ireland experienced significant emigration, particularly during and after the Great Famine (1845-1852). ';
-    } else if (loc.includes('germany') || loc.includes('prussia')) {
-      context += 'Germany underwent unification in 1871 and was a major European power. Many Germans emigrated to America in the 19th century. ';
-    } else if (loc.includes('italy')) {
-      context += 'Italy saw massive emigration between 1880-1920, with millions seeking opportunities abroad. ';
-    } else if (loc.includes('new york')) {
-      context += 'New York was a major port of entry for immigrants and a rapidly growing industrial center. Ellis Island processed millions of arrivals. ';
-    } else if (loc.includes('california')) {
-      context += 'California attracted settlers during the Gold Rush (1849) and continued to grow with opportunities in agriculture, mining, and later technology. ';
-    } else if (loc.includes('pennsylvania')) {
-      context += 'Pennsylvania was a major industrial state, known for coal mining, steel production, and manufacturing. ';
-    } else if (loc.includes('massachusetts') || loc.includes('boston')) {
-      context += 'Massachusetts was a center of early American history, industry, and immigration, particularly for Irish and Italian immigrants. ';
-    } else if (loc.includes('chicago')) {
-      context += 'Chicago grew rapidly as a railroad hub and industrial center, attracting immigrants from across Europe. ';
-    } else {
-      context += 'This location played a role in the family\'s geographic journey. ';
-    }
-
-    context += '\n\n';
-    return context;
-  }
-
-  /**
-   * Describe what life was like during person's lifetime
+   * Get era/lifetime data for a person (DATA ONLY - let LLM provide context)
    */
   async gedcomEraContext(individualId, includeWorldEvents = true) {
     if (!this.gedcomData) {
@@ -3803,164 +3747,28 @@ class AncestryMCPServer {
       };
     }
 
-    let context = `# Life and Times of ${name}\n\n`;
-    context += `## Overview\n\n`;
-
-    if (deathYear) {
-      context += `${name} lived from ${birthYear} to ${deathYear} (approximately ${deathYear - birthYear} years).\n\n`;
-    } else {
-      context += `${name} was born in ${birthYear}.\n\n`;
-    }
-
-    // Era classification
-    context += `## Historical Era\n\n`;
-    context += this.classifyEra(birthYear, deathYear);
-
-    // Major events during lifetime
-    if (includeWorldEvents) {
-      context += `## Major Historical Events During ${name}'s Lifetime\n\n`;
-      context += this.getMajorEvents(birthYear, deathYear);
-    }
-
-    // Daily life context
-    context += `## Daily Life and Society\n\n`;
-    context += this.getDailyLifeContext(birthYear, deathYear);
-
-    // Technology and innovation
-    context += `## Technology and Innovation\n\n`;
-    context += this.getTechnologyContext(birthYear, deathYear);
+    // Return structured data - let the LLM provide historical context
+    const result = {
+      name,
+      birthYear,
+      deathYear: deathYear || null,
+      lifespan: deathYear ? deathYear - birthYear : null,
+      birthPlace: birthEvent?.location || null,
+      deathPlace: deathEvent?.location || null,
+      allEvents: events.map(e => ({
+        type: e.type,
+        date: e.date,
+        year: this.extractYear(e.date),
+        location: e.location,
+      })),
+    };
 
     return {
       content: [{
         type: 'text',
-        text: context,
+        text: JSON.stringify(result, null, 2),
       }],
     };
-  }
-
-  /**
-   * Classify historical era
-   */
-  classifyEra(birthYear, deathYear) {
-    let era = '';
-
-    if (birthYear < 1800) {
-      era += `${name} was born in the **18th century**, during the Age of Enlightenment and before the Industrial Revolution.\n\n`;
-    } else if (birthYear >= 1800 && birthYear < 1850) {
-      era += `Born in the **early 19th century**, during the height of the Industrial Revolution and westward expansion in America.\n\n`;
-    } else if (birthYear >= 1850 && birthYear < 1900) {
-      era += `Born in the **mid-to-late 19th century**, an era of rapid industrialization, immigration, and social change.\n\n`;
-    } else if (birthYear >= 1900 && birthYear < 1920) {
-      era += `Born in the **early 20th century**, witnessing the end of the Victorian era and the tumultuous period of World War I.\n\n`;
-    } else if (birthYear >= 1920 && birthYear < 1945) {
-      era += `Born between the **World Wars**, experiencing the Roaring Twenties, Great Depression, and World War II.\n\n`;
-    } else if (birthYear >= 1945 && birthYear < 1965) {
-      era += `Born in the **post-World War II era**, during the Baby Boom and Cold War period.\n\n`;
-    } else if (birthYear >= 1965 && birthYear < 1980) {
-      era += `Born in the **late 20th century**, during the Civil Rights movement and the Space Age.\n\n`;
-    } else {
-      era += `Born in the **modern era**.\n\n`;
-    }
-
-    return era;
-  }
-
-  /**
-   * Get major historical events during lifetime
-   */
-  getMajorEvents(birthYear, deathYear) {
-    const events = [];
-    const endYear = deathYear || new Date().getFullYear();
-
-    // American Civil War
-    if (birthYear <= 1865 && endYear >= 1861) {
-      events.push(`**American Civil War (1861-1865)**: The deadliest conflict in American history, ending slavery`);
-    }
-
-    // Industrial Revolution
-    if (birthYear <= 1900 && endYear >= 1800) {
-      events.push(`**Industrial Revolution**: Transformation from agrarian to industrial society, with factories, railroads, and urbanization`);
-    }
-
-    // World War I
-    if (birthYear <= 1918 && endYear >= 1914) {
-      events.push(`**World War I (1914-1918)**: "The Great War" that reshaped global politics and society`);
-    }
-
-    // Great Depression
-    if (birthYear <= 1939 && endYear >= 1929) {
-      events.push(`**Great Depression (1929-1939)**: Severe worldwide economic depression affecting millions`);
-    }
-
-    // World War II
-    if (birthYear <= 1945 && endYear >= 1939) {
-      events.push(`**World War II (1939-1945)**: Global conflict that changed the world order`);
-    }
-
-    // Cold War
-    if (birthYear <= 1991 && endYear >= 1947) {
-      events.push(`**Cold War (1947-1991)**: Geopolitical tension between the US and Soviet Union`);
-    }
-
-    // Women's Suffrage
-    if (birthYear <= 1920 && endYear >= 1848) {
-      events.push(`**Women's Suffrage Movement**: Culminating in women gaining the right to vote (19th Amendment, 1920)`);
-    }
-
-    // Immigration waves
-    if (birthYear <= 1920 && endYear >= 1880) {
-      events.push(`**Mass Immigration (1880-1920)**: Over 20 million immigrants arrived in the United States`);
-    }
-
-    if (events.length === 0) {
-      return 'Historical events during this period are beyond the scope of this summary.\n\n';
-    }
-
-    return events.map(e => `- ${e}`).join('\n') + '\n\n';
-  }
-
-  /**
-   * Get daily life context
-   */
-  getDailyLifeContext(birthYear, deathYear) {
-    const midLife = birthYear + Math.floor((deathYear ? (deathYear - birthYear) / 2 : 30));
-
-    if (midLife < 1850) {
-      return `Life was largely rural and agricultural. Most people lived on farms, transportation was by horse, ` +
-             `and communication was limited to letters. Work was physically demanding, and life expectancy was shorter.\n\n`;
-    } else if (midLife < 1900) {
-      return `Society was transitioning from rural to urban. Railroads connected cities, factories provided employment, ` +
-             `but working conditions were often harsh. Gas lighting was replacing candles, but electricity was still rare.\n\n`;
-    } else if (midLife < 1945) {
-      return `Urban life was increasingly common. Electricity, telephones, and automobiles were transforming daily life. ` +
-             `Radio provided entertainment and news. However, economic instability and world wars created challenges.\n\n`;
-    } else {
-      return `Modern conveniences like television, refrigeration, and automobiles were becoming standard. ` +
-             `Suburban living expanded, and the middle class grew. Society was more mobile and connected than ever before.\n\n`;
-    }
-  }
-
-  /**
-   * Get technology context
-   */
-  getTechnologyContext(birthYear, deathYear) {
-    const technologies = [];
-    const endYear = deathYear || new Date().getFullYear();
-
-    if (birthYear <= 1876 && endYear >= 1876) technologies.push('Telephone invented (1876)');
-    if (birthYear <= 1879 && endYear >= 1879) technologies.push('Electric light bulb (1879)');
-    if (birthYear <= 1903 && endYear >= 1903) technologies.push('First airplane flight (1903)');
-    if (birthYear <= 1920 && endYear >= 1920) technologies.push('Commercial radio broadcasting began (1920)');
-    if (birthYear <= 1927 && endYear >= 1927) technologies.push('Television demonstrated (1927)');
-    if (birthYear <= 1945 && endYear >= 1945) technologies.push('Nuclear age began (1945)');
-    if (birthYear <= 1969 && endYear >= 1969) technologies.push('Moon landing (1969)');
-    if (birthYear <= 1989 && endYear >= 1989) technologies.push('World Wide Web invented (1989)');
-
-    if (technologies.length === 0) {
-      return 'Technological developments during this era are beyond the scope of this summary.\n\n';
-    }
-
-    return `Key innovations during this lifetime:\n` + technologies.map(t => `- ${t}`).join('\n') + '\n\n';
   }
 
   async cleanup() {
