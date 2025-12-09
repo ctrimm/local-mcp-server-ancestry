@@ -1,7 +1,8 @@
 # TODO: Ancestry MCP Server
 
 ## Recently Completed ✅
-- [x] **GEDCOM File Support** - Full implementation with 7 tools (load, search, get person, ancestors, descendants, family, narrative)
+- [x] **GEDCOM File Support** - Full implementation with 12 tools for storytelling
+- [x] **Storytelling Tools (Phase 2 Complete)** - Relationship explainer, life summary (4 styles), migration story, family saga, sibling comparison
 - [x] **Security Fix** - Updated MCP SDK from 0.6.0 to 1.24.3 (fixed DNS rebinding vulnerability)
 - [x] **Session Persistence** - Saves login cookies to `.ancestry-session.json`
 - [x] **Screenshot Debugging** - Automatically captures screenshots on errors
@@ -9,21 +10,21 @@
 - [x] **Retry Logic** - Automatic retry with exponential backoff for failed operations
 - [x] **Error Handling** - Comprehensive try-catch blocks with detailed error messages
 - [x] **Graceful Degradation** - Continues operation when some elements are missing
-- [x] **Documentation** - Updated README with GEDCOM configuration and usage examples
+- [x] **Documentation** - Updated README with all GEDCOM storytelling tools
 
 ## Storytelling & Narrative Features (HIGH PRIORITY)
 *Focus: Help AI models parse genealogy data and create compelling stories for users*
 
 ### Interactive Q&A Tools
 - [ ] **gedcom_ask_about_person** - Answer natural language questions about a person (e.g., "Where did they live?", "How many children?")
-- [ ] **gedcom_relationship_explainer** - Calculate and explain relationships between any two people with narrative description
-- [ ] **gedcom_life_summary** - Generate different narrative styles (brief, detailed, chronological, thematic)
+- [x] **gedcom_relationship_explainer** - Calculate and explain relationships between any two people with narrative description
+- [x] **gedcom_life_summary** - Generate different narrative styles (brief, detailed, chronological, thematic)
 
 ### Multi-Person Narratives
-- [ ] **gedcom_family_saga** - Generate chronological narrative spanning multiple family members
-- [ ] **gedcom_sibling_comparison** - Compare and contrast life experiences of siblings
+- [x] **gedcom_family_saga** - Generate chronological narrative spanning multiple family members
+- [x] **gedcom_sibling_comparison** - Compare and contrast life experiences of siblings
 - [ ] **gedcom_generational_comparison** - Compare experiences across generations (parent vs child)
-- [ ] **gedcom_migration_story** - Trace family movements over generations with narrative context
+- [x] **gedcom_migration_story** - Trace family movements over generations with narrative context
 
 ### Context Enrichment
 - [ ] **gedcom_enrich_events** - Add historical/cultural context to specific life events
@@ -222,13 +223,13 @@
 3. ✅ Basic narrative generation
 4. ✅ Session persistence and error handling
 
-### Phase 2 (Current Priority) - Storytelling Tools
+### Phase 2 ✅ MOSTLY COMPLETE - Storytelling Tools
 **Goal: Help AI models create compelling stories from genealogy data**
-1. **gedcom_relationship_explainer** - Calculate how people are related with narrative explanation
-2. **gedcom_life_summary** - Multiple narrative styles (brief/detailed/chronological)
-3. **gedcom_family_saga** - Multi-person chronological narratives
-4. **gedcom_sibling_comparison** - Compare life experiences of siblings
-5. **gedcom_migration_story** - Track family movements over generations
+1. ✅ **gedcom_relationship_explainer** - Calculate how people are related with narrative explanation
+2. ✅ **gedcom_life_summary** - Multiple narrative styles (brief/detailed/chronological/thematic)
+3. ✅ **gedcom_family_saga** - Multi-person chronological narratives
+4. ✅ **gedcom_sibling_comparison** - Compare life experiences of siblings
+5. ✅ **gedcom_migration_story** - Track family movements over generations
 
 ### Phase 3 - Context Enrichment
 1. Integrate web search for historical context

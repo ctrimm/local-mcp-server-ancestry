@@ -474,6 +474,67 @@ class AncestryMCPServer {
             required: ['individualId', 'style'],
           },
         },
+        {
+          name: 'gedcom_migration_story',
+          description: 'Trace family movements and migrations across generations, creating a rich narrative of geographic journey',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              startingPersonId: {
+                type: 'string',
+                description: 'The GEDCOM individual ID to start the migration story from',
+              },
+              generations: {
+                type: 'number',
+                description: 'Number of generations to trace (default: 4)',
+              },
+              direction: {
+                type: 'string',
+                description: 'Direction to trace: "ancestors" (backward in time), "descendants" (forward in time), or "both"',
+                enum: ['ancestors', 'descendants', 'both'],
+              },
+            },
+            required: ['startingPersonId'],
+          },
+        },
+        {
+          name: 'gedcom_family_saga',
+          description: 'Generate a chronological narrative spanning multiple family members, weaving their stories together',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              familyIds: {
+                type: 'array',
+                description: 'Array of GEDCOM individual IDs to include in the saga',
+                items: {
+                  type: 'string',
+                },
+              },
+              focusPersonId: {
+                type: 'string',
+                description: 'Optional: ID of person to center the narrative around',
+              },
+            },
+            required: ['familyIds'],
+          },
+        },
+        {
+          name: 'gedcom_sibling_comparison',
+          description: 'Compare and contrast the life experiences of siblings, highlighting similarities and differences',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              siblingIds: {
+                type: 'array',
+                description: 'Array of GEDCOM individual IDs of siblings to compare',
+                items: {
+                  type: 'string',
+                },
+              },
+            },
+            required: ['siblingIds'],
+          },
+        },
       ],
     }));
 
@@ -530,6 +591,15 @@ class AncestryMCPServer {
 
           case 'gedcom_life_summary':
             return await this.gedcomLifeSummary(args.individualId, args.style);
+
+          case 'gedcom_migration_story':
+            return await this.gedcomMigrationStory(args.startingPersonId, args.generations || 4, args.direction || 'ancestors');
+
+          case 'gedcom_family_saga':
+            return await this.gedcomFamilySaga(args.familyIds, args.focusPersonId);
+
+          case 'gedcom_sibling_comparison':
+            return await this.gedcomSiblingComparison(args.siblingIds);
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -2330,6 +2400,776 @@ class AncestryMCPServer {
     // Try to find a 4-digit year
     const yearMatch = dateStr.match(/\b(1\d{3}|20\d{2})\b/);
     return yearMatch ? parseInt(yearMatch[1]) : null;
+  }
+
+  /**
+   * Trace family migrations across generations
+   */
+  async gedcomMigrationStory(startingPersonId, generations = 4, direction = 'ancestors') {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const startingPerson = this.gedcomIndex.individuals.get(startingPersonId);
+    if (!startingPerson) {
+      throw new Error(`Individual ${startingPersonId} not found.`);
+    }
+
+    // Collect all people and their location data
+    const peopleData = [];
+
+    if (direction === 'ancestors' || direction === 'both') {
+      this.collectAncestorsMigration(startingPersonId, generations, peopleData, 0);
+    }
+
+    if (direction === 'descendants' || direction === 'both') {
+      this.collectDescendantsMigration(startingPersonId, generations, peopleData, 0);
+    }
+
+    // Add the starting person if not already included
+    if (!peopleData.find(p => p.id === startingPersonId)) {
+      peopleData.push(this.extractPersonLocationData(startingPersonId, 0));
+    }
+
+    // Sort by generation (oldest first) and then by birth year
+    peopleData.sort((a, b) => {
+      if (a.generation !== b.generation) {
+        return direction === 'ancestors' ? b.generation - a.generation : a.generation - b.generation;
+      }
+      if (a.birthYear && b.birthYear) {
+        return a.birthYear - b.birthYear;
+      }
+      return 0;
+    });
+
+    // Build migration narrative
+    let narrative = `# Family Migration Story\n\n`;
+
+    const startingName = this.extractName(startingPerson);
+    narrative += `## Overview\n\n`;
+    narrative += `Tracing the geographic journey of ${startingName}'s family across ${generations} generation(s).\n\n`;
+
+    // Extract unique locations
+    const locationsByGeneration = this.extractLocationsByGeneration(peopleData);
+
+    // Migration summary
+    narrative += `## Migration Summary\n\n`;
+    for (const [gen, locations] of Object.entries(locationsByGeneration)) {
+      if (locations.length > 0) {
+        const genLabel = gen === '0' ? 'Starting generation' : `Generation ${Math.abs(parseInt(gen))} ${parseInt(gen) < 0 ? 'back' : 'forward'}`;
+        narrative += `**${genLabel}**: ${locations.join(', ')}\n\n`;
+      }
+    }
+
+    // Detailed migration stories by person
+    narrative += `## Detailed Migration Stories\n\n`;
+
+    const migrationGroups = this.groupByMigrationPattern(peopleData);
+
+    for (const group of migrationGroups) {
+      if (group.people.length === 1) {
+        const person = group.people[0];
+        narrative += this.generatePersonMigrationNarrative(person);
+      } else {
+        // Multiple people with similar migration patterns
+        narrative += `### ${group.pattern}\n\n`;
+        narrative += `${group.people.length} family members followed this migration path:\n\n`;
+        for (const person of group.people) {
+          narrative += `- **${person.name}** (${person.birthYear || '?'} - ${person.deathYear || '?'})\n`;
+        }
+        narrative += `\n${group.description}\n\n`;
+      }
+    }
+
+    // Migration patterns and insights
+    narrative += `## Migration Patterns & Insights\n\n`;
+    narrative += this.analyzeMigrationPatterns(peopleData);
+
+    return {
+      content: [{
+        type: 'text',
+        text: narrative,
+      }],
+    };
+  }
+
+  /**
+   * Collect ancestors with migration data
+   */
+  collectAncestorsMigration(individualId, maxGen, peopleData, currentGen) {
+    if (currentGen >= maxGen) return;
+
+    const person = this.gedcomIndex.individuals.get(individualId);
+    if (!person) return;
+
+    peopleData.push(this.extractPersonLocationData(individualId, -currentGen));
+
+    // Get parents
+    const famcTag = person.children?.find(c => c.tag === 'FAMC');
+    if (famcTag) {
+      const parentFamily = this.gedcomIndex.families.get(famcTag.data);
+      if (parentFamily) {
+        const husbTag = parentFamily.children?.find(c => c.tag === 'HUSB');
+        const wifeTag = parentFamily.children?.find(c => c.tag === 'WIFE');
+
+        if (husbTag) this.collectAncestorsMigration(husbTag.data, maxGen, peopleData, currentGen + 1);
+        if (wifeTag) this.collectAncestorsMigration(wifeTag.data, maxGen, peopleData, currentGen + 1);
+      }
+    }
+  }
+
+  /**
+   * Collect descendants with migration data
+   */
+  collectDescendantsMigration(individualId, maxGen, peopleData, currentGen) {
+    if (currentGen >= maxGen) return;
+
+    const person = this.gedcomIndex.individuals.get(individualId);
+    if (!person) return;
+
+    if (currentGen > 0) {
+      peopleData.push(this.extractPersonLocationData(individualId, currentGen));
+    }
+
+    // Get children
+    const famsTags = person.children?.filter(c => c.tag === 'FAMS') || [];
+    for (const famsTag of famsTags) {
+      const family = this.gedcomIndex.families.get(famsTag.data);
+      if (!family) continue;
+
+      const childTags = family.children?.filter(c => c.tag === 'CHIL') || [];
+      for (const childTag of childTags) {
+        this.collectDescendantsMigration(childTag.data, maxGen, peopleData, currentGen + 1);
+      }
+    }
+  }
+
+  /**
+   * Extract person's location data for migration story
+   */
+  extractPersonLocationData(individualId, generation) {
+    const person = this.gedcomIndex.individuals.get(individualId);
+    const name = this.extractName(person);
+    const events = this.extractEvents(person);
+
+    const birthEvent = events.find(e => e.type === 'Birth');
+    const deathEvent = events.find(e => e.type === 'Death');
+    const migrationEvents = events.filter(e =>
+      ['Immigration', 'Emigration', 'Naturalization', 'Residence'].includes(e.type)
+    );
+
+    return {
+      id: individualId,
+      name,
+      generation,
+      birthYear: this.extractYear(birthEvent?.date),
+      deathYear: this.extractYear(deathEvent?.date),
+      birthPlace: birthEvent?.location || null,
+      deathPlace: deathEvent?.location || null,
+      migrationEvents,
+      allEvents: events,
+    };
+  }
+
+  /**
+   * Extract locations grouped by generation
+   */
+  extractLocationsByGeneration(peopleData) {
+    const locationsByGen = {};
+
+    for (const person of peopleData) {
+      if (!locationsByGen[person.generation]) {
+        locationsByGen[person.generation] = new Set();
+      }
+
+      if (person.birthPlace) locationsByGen[person.generation].add(person.birthPlace);
+      if (person.deathPlace) locationsByGen[person.generation].add(person.deathPlace);
+
+      for (const event of person.migrationEvents) {
+        if (event.location) locationsByGen[person.generation].add(event.location);
+      }
+    }
+
+    // Convert sets to arrays
+    const result = {};
+    for (const [gen, locations] of Object.entries(locationsByGen)) {
+      result[gen] = Array.from(locations);
+    }
+
+    return result;
+  }
+
+  /**
+   * Group people by similar migration patterns
+   */
+  groupByMigrationPattern(peopleData) {
+    const groups = [];
+
+    for (const person of peopleData) {
+      if (!person.birthPlace && !person.deathPlace && person.migrationEvents.length === 0) {
+        continue; // Skip people with no location data
+      }
+
+      const locations = [];
+      if (person.birthPlace) locations.push(person.birthPlace);
+      for (const event of person.migrationEvents) {
+        if (event.location) locations.push(event.location);
+      }
+      if (person.deathPlace && person.deathPlace !== locations[locations.length - 1]) {
+        locations.push(person.deathPlace);
+      }
+
+      groups.push({
+        pattern: locations.length > 1 ? `${locations[0]} → ${locations[locations.length - 1]}` : locations[0] || 'Unknown',
+        locations,
+        people: [person],
+        description: this.describeMigrationPattern(person, locations),
+      });
+    }
+
+    return groups;
+  }
+
+  /**
+   * Generate narrative for a person's migration
+   */
+  generatePersonMigrationNarrative(person) {
+    let narrative = `### ${person.name}\n\n`;
+
+    if (person.birthYear && person.deathYear) {
+      narrative += `**Lifespan**: ${person.birthYear} - ${person.deathYear}\n\n`;
+    }
+
+    if (person.birthPlace) {
+      narrative += `${person.name} was born in **${person.birthPlace}**`;
+      if (person.birthYear) narrative += ` in ${person.birthYear}`;
+      narrative += '.\n\n';
+    }
+
+    if (person.migrationEvents.length > 0) {
+      narrative += `**Migration Journey:**\n\n`;
+      for (const event of person.migrationEvents) {
+        narrative += `- **${event.type}**`;
+        if (event.date) narrative += ` (${event.date})`;
+        if (event.location) narrative += `: ${event.location}`;
+        narrative += '\n';
+      }
+      narrative += '\n';
+    }
+
+    if (person.deathPlace) {
+      narrative += `${person.name} passed away in **${person.deathPlace}**`;
+      if (person.deathYear) narrative += ` in ${person.deathYear}`;
+      narrative += '.\n\n';
+    }
+
+    // Calculate distance traveled (if different locations)
+    if (person.birthPlace && person.deathPlace && person.birthPlace !== person.deathPlace) {
+      narrative += `*${person.name} migrated from ${person.birthPlace} to ${person.deathPlace} during their lifetime.*\n\n`;
+    }
+
+    return narrative;
+  }
+
+  /**
+   * Describe migration pattern
+   */
+  describeMigrationPattern(person, locations) {
+    if (locations.length === 0) return 'No location data available.';
+    if (locations.length === 1) return `Lived their entire life in ${locations[0]}.`;
+
+    let description = `Migrated from ${locations[0]}`;
+    if (locations.length > 2) {
+      description += ` through ${locations.slice(1, -1).join(', ')}`;
+    }
+    description += ` to ${locations[locations.length - 1]}.`;
+
+    return description;
+  }
+
+  /**
+   * Analyze migration patterns across all people
+   */
+  analyzeMigrationPatterns(peopleData) {
+    let analysis = '';
+
+    // Count migrations
+    const migrationsCount = peopleData.filter(p =>
+      p.birthPlace && p.deathPlace && p.birthPlace !== p.deathPlace
+    ).length;
+
+    analysis += `**Total family members tracked**: ${peopleData.length}\n`;
+    analysis += `**Family members who migrated**: ${migrationsCount}\n\n`;
+
+    // Find most common locations
+    const locationCounts = {};
+    for (const person of peopleData) {
+      if (person.birthPlace) locationCounts[person.birthPlace] = (locationCounts[person.birthPlace] || 0) + 1;
+      if (person.deathPlace) locationCounts[person.deathPlace] = (locationCounts[person.deathPlace] || 0) + 1;
+    }
+
+    const sortedLocations = Object.entries(locationCounts).sort((a, b) => b[1] - a[1]);
+
+    if (sortedLocations.length > 0) {
+      analysis += `**Most common locations**:\n`;
+      for (let i = 0; i < Math.min(5, sortedLocations.length); i++) {
+        analysis += `- ${sortedLocations[i][0]} (${sortedLocations[i][1]} mentions)\n`;
+      }
+      analysis += '\n';
+    }
+
+    // Identify migration trends
+    const immigrationEvents = peopleData.reduce((sum, p) =>
+      sum + p.migrationEvents.filter(e => e.type === 'Immigration').length, 0
+    );
+    const emigrationEvents = peopleData.reduce((sum, p) =>
+      sum + p.migrationEvents.filter(e => e.type === 'Emigration').length, 0
+    );
+
+    if (immigrationEvents > 0 || emigrationEvents > 0) {
+      analysis += `**Migration trends**:\n`;
+      if (immigrationEvents > 0) analysis += `- ${immigrationEvents} immigration event(s) recorded\n`;
+      if (emigrationEvents > 0) analysis += `- ${emigrationEvents} emigration event(s) recorded\n`;
+      analysis += '\n';
+    }
+
+    return analysis;
+  }
+
+  /**
+   * Generate family saga - chronological narrative of multiple people
+   */
+  async gedcomFamilySaga(familyIds, focusPersonId = null) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    // Collect all people's data
+    const familyMembers = [];
+    for (const id of familyIds) {
+      const person = this.gedcomIndex.individuals.get(id);
+      if (person) {
+        const name = this.extractName(person);
+        const events = this.extractEvents(person);
+        const birthEvent = events.find(e => e.type === 'Birth');
+        const deathEvent = events.find(e => e.type === 'Death');
+
+        familyMembers.push({
+          id,
+          name,
+          birthYear: this.extractYear(birthEvent?.date),
+          deathYear: this.extractYear(deathEvent?.date),
+          birthEvent,
+          deathEvent,
+          events,
+          allEvents: events,
+        });
+      }
+    }
+
+    if (familyMembers.length === 0) {
+      throw new Error('No valid family members found.');
+    }
+
+    // Sort by birth year
+    familyMembers.sort((a, b) => {
+      if (!a.birthYear && !b.birthYear) return 0;
+      if (!a.birthYear) return 1;
+      if (!b.birthYear) return -1;
+      return a.birthYear - b.birthYear;
+    });
+
+    // Build saga
+    let saga = `# Family Saga\n\n`;
+
+    if (focusPersonId) {
+      const focusPerson = familyMembers.find(m => m.id === focusPersonId);
+      if (focusPerson) {
+        saga += `## Centered on ${focusPerson.name}\n\n`;
+      }
+    }
+
+    saga += `## The Family Story\n\n`;
+    saga += `This saga follows ${familyMembers.length} family member(s) across `;
+
+    const years = familyMembers.filter(m => m.birthYear || m.deathYear).map(m => m.birthYear || m.deathYear);
+    if (years.length > 0) {
+      const minYear = Math.min(...years.filter(y => y));
+      const maxYear = Math.max(...years.filter(y => y));
+      saga += `${maxYear - minYear} years (${minYear} - ${maxYear}).\n\n`;
+    } else {
+      saga += `multiple generations.\n\n`;
+    }
+
+    // Create chronological timeline of all events
+    const allEvents = [];
+    for (const member of familyMembers) {
+      for (const event of member.allEvents) {
+        allEvents.push({
+          ...event,
+          person: member.name,
+          personId: member.id,
+          year: this.extractYear(event.date),
+        });
+      }
+    }
+
+    // Sort by year
+    allEvents.sort((a, b) => {
+      if (!a.year && !b.year) return 0;
+      if (!a.year) return 1;
+      if (!b.year) return -1;
+      return a.year - b.year;
+    });
+
+    // Group events by decade or generation
+    saga += `## The Timeline\n\n`;
+
+    let currentDecade = null;
+    for (const event of allEvents) {
+      if (!event.year) continue;
+
+      const decade = Math.floor(event.year / 10) * 10;
+
+      if (decade !== currentDecade) {
+        currentDecade = decade;
+        saga += `### The ${decade}s\n\n`;
+      }
+
+      saga += `**${event.year}** - ${event.person}: ${event.type}`;
+      if (event.location) saga += ` in ${event.location}`;
+      saga += '\n\n';
+    }
+
+    // Individual stories
+    saga += `## Individual Stories\n\n`;
+    for (const member of familyMembers) {
+      saga += this.generateMemberStoryForSaga(member);
+    }
+
+    // Family connections
+    saga += `## Family Connections\n\n`;
+    saga += this.describeFamilyConnections(familyIds);
+
+    return {
+      content: [{
+        type: 'text',
+        text: saga,
+      }],
+    };
+  }
+
+  /**
+   * Generate individual story for saga
+   */
+  generateMemberStoryForSaga(member) {
+    let story = `### ${member.name}\n\n`;
+
+    if (member.birthYear || member.deathYear) {
+      story += `**${member.birthYear || '?'} - ${member.deathYear || '?'}**\n\n`;
+    }
+
+    if (member.birthEvent) {
+      story += `Born`;
+      if (member.birthEvent.date) story += ` on ${member.birthEvent.date}`;
+      if (member.birthEvent.location) story += ` in ${member.birthEvent.location}`;
+      story += '.\n\n';
+    }
+
+    // Key life events
+    const keyEvents = member.events.filter(e =>
+      !['Birth', 'Death'].includes(e.type)
+    );
+
+    if (keyEvents.length > 0) {
+      story += `**Life events:**\n`;
+      for (const event of keyEvents) {
+        story += `- ${event.type}`;
+        if (event.date) story += ` (${event.date})`;
+        if (event.location) story += ` in ${event.location}`;
+        story += '\n';
+      }
+      story += '\n';
+    }
+
+    if (member.deathEvent) {
+      story += `Passed away`;
+      if (member.deathEvent.date) story += ` on ${member.deathEvent.date}`;
+      if (member.deathEvent.location) story += ` in ${member.deathEvent.location}`;
+      story += '.\n\n';
+    }
+
+    return story;
+  }
+
+  /**
+   * Describe family connections
+   */
+  describeFamilyConnections(familyIds) {
+    let connections = '';
+
+    // Find relationships between family members
+    const relationships = [];
+    for (let i = 0; i < familyIds.length; i++) {
+      for (let j = i + 1; j < familyIds.length; j++) {
+        const rel = this.findRelationship(familyIds[i], familyIds[j]);
+        if (rel) {
+          const name1 = this.extractName(this.gedcomIndex.individuals.get(familyIds[i]));
+          const name2 = this.extractName(this.gedcomIndex.individuals.get(familyIds[j]));
+          relationships.push(`- ${name1} and ${name2}: ${rel.description}`);
+        }
+      }
+    }
+
+    if (relationships.length > 0) {
+      connections += relationships.join('\n');
+    } else {
+      connections += 'Relationships between family members could not be determined.';
+    }
+
+    return connections + '\n\n';
+  }
+
+  /**
+   * Compare siblings' life experiences
+   */
+  async gedcomSiblingComparison(siblingIds) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    if (siblingIds.length < 2) {
+      throw new Error('At least 2 siblings required for comparison.');
+    }
+
+    // Collect sibling data
+    const siblings = [];
+    for (const id of siblingIds) {
+      const person = this.gedcomIndex.individuals.get(id);
+      if (person) {
+        const name = this.extractName(person);
+        const events = this.extractEvents(person);
+        const birthEvent = events.find(e => e.type === 'Birth');
+        const deathEvent = events.find(e => e.type === 'Death');
+
+        siblings.push({
+          id,
+          name,
+          birthYear: this.extractYear(birthEvent?.date),
+          deathYear: this.extractYear(deathEvent?.date),
+          birthPlace: birthEvent?.location,
+          deathPlace: deathEvent?.location,
+          lifespan: (birthEvent && deathEvent) ?
+            (this.extractYear(deathEvent.date) - this.extractYear(birthEvent.date)) : null,
+          events,
+          marriages: events.filter(e => e.type === 'Marriage'),
+          children: this.countChildren(id),
+          occupations: events.filter(e => e.type === 'Occupation'),
+          migrations: events.filter(e => ['Immigration', 'Emigration', 'Residence'].includes(e.type)),
+        });
+      }
+    }
+
+    // Build comparison
+    let comparison = `# Sibling Comparison\n\n`;
+    comparison += `Comparing the lives of ${siblings.length} siblings.\n\n`;
+
+    // Summary table
+    comparison += `## Quick Comparison\n\n`;
+    comparison += `| Name | Birth Year | Death Year | Lifespan | Birth Place |\n`;
+    comparison += `|------|------------|------------|----------|-------------|\n`;
+    for (const sibling of siblings) {
+      comparison += `| ${sibling.name} | ${sibling.birthYear || '?'} | ${sibling.deathYear || '?'} | `;
+      comparison += `${sibling.lifespan ? sibling.lifespan + ' years' : '?'} | `;
+      comparison += `${sibling.birthPlace || 'Unknown'} |\n`;
+    }
+    comparison += `\n`;
+
+    // Similarities
+    comparison += `## Similarities\n\n`;
+    comparison += this.findSiblingSimilarities(siblings);
+
+    // Differences
+    comparison += `## Differences\n\n`;
+    comparison += this.findSiblingDifferences(siblings);
+
+    // Life paths
+    comparison += `## Individual Life Paths\n\n`;
+    for (const sibling of siblings) {
+      comparison += this.describeSiblingLifePath(sibling);
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: comparison,
+      }],
+    };
+  }
+
+  /**
+   * Count children for a person
+   */
+  countChildren(individualId) {
+    const person = this.gedcomIndex.individuals.get(individualId);
+    if (!person) return 0;
+
+    let count = 0;
+    const famsTags = person.children?.filter(c => c.tag === 'FAMS') || [];
+    for (const famsTag of famsTags) {
+      const family = this.gedcomIndex.families.get(famsTag.data);
+      if (family) {
+        const childTags = family.children?.filter(c => c.tag === 'CHIL') || [];
+        count += childTags.length;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Find similarities between siblings
+   */
+  findSiblingSimilarities(siblings) {
+    let similarities = '';
+
+    // Birth place
+    const birthPlaces = siblings.map(s => s.birthPlace).filter(p => p);
+    if (birthPlaces.length > 0 && birthPlaces.every(p => p === birthPlaces[0])) {
+      similarities += `- All siblings were born in **${birthPlaces[0]}**\n`;
+    }
+
+    // Migration patterns
+    const allMigrated = siblings.every(s => s.migrations.length > 0);
+    if (allMigrated) {
+      similarities += `- All siblings experienced migration during their lifetimes\n`;
+    }
+
+    // Marriage
+    const allMarried = siblings.every(s => s.marriages.length > 0);
+    if (allMarried) {
+      similarities += `- All siblings married\n`;
+    }
+
+    // Similar lifespans
+    const lifespans = siblings.map(s => s.lifespan).filter(l => l !== null);
+    if (lifespans.length > 1) {
+      const avgLifespan = lifespans.reduce((sum, l) => sum + l, 0) / lifespans.length;
+      const variance = lifespans.reduce((sum, l) => sum + Math.pow(l - avgLifespan, 2), 0) / lifespans.length;
+      if (variance < 100) { // Similar lifespans (within ~10 years)
+        similarities += `- Siblings had similar lifespans (average: ${Math.round(avgLifespan)} years)\n`;
+      }
+    }
+
+    if (similarities === '') {
+      similarities = 'No strong similarities identified in the available data.\n';
+    }
+
+    return similarities + '\n';
+  }
+
+  /**
+   * Find differences between siblings
+   */
+  findSiblingDifferences(siblings) {
+    let differences = '';
+
+    // Lifespan differences
+    const lifespans = siblings.filter(s => s.lifespan !== null);
+    if (lifespans.length > 1) {
+      const sorted = [...lifespans].sort((a, b) => a.lifespan - b.lifespan);
+      const shortest = sorted[0];
+      const longest = sorted[sorted.length - 1];
+      if (longest.lifespan - shortest.lifespan > 20) {
+        differences += `- **Lifespan variance**: ${shortest.name} lived ${shortest.lifespan} years, `;
+        differences += `while ${longest.name} lived ${longest.lifespan} years (${longest.lifespan - shortest.lifespan} year difference)\n`;
+      }
+    }
+
+    // Death place differences
+    const deathPlaces = siblings.map(s => s.deathPlace).filter(p => p);
+    const uniqueDeathPlaces = [...new Set(deathPlaces)];
+    if (uniqueDeathPlaces.length > 1) {
+      differences += `- Siblings died in different locations: ${uniqueDeathPlaces.join(', ')}\n`;
+    }
+
+    // Children count
+    const childCounts = siblings.map(s => ({ name: s.name, count: s.children }));
+    const maxChildren = Math.max(...childCounts.map(c => c.count));
+    const minChildren = Math.min(...childCounts.map(c => c.count));
+    if (maxChildren > minChildren) {
+      const mostChildren = childCounts.find(c => c.count === maxChildren);
+      const leastChildren = childCounts.find(c => c.count === minChildren);
+      differences += `- **Family size**: ${mostChildren.name} had ${maxChildren} children, `;
+      differences += `while ${leastChildren.name} had ${minChildren} children\n`;
+    }
+
+    // Occupation differences
+    const occupations = siblings.map(s => ({
+      name: s.name,
+      occupations: s.occupations.map(o => o.location || 'occupation').join(', ')
+    })).filter(o => o.occupations);
+
+    if (occupations.length > 1) {
+      differences += `- **Occupations varied**: `;
+      differences += occupations.map(o => `${o.name} (${o.occupations})`).join('; ') + '\n';
+    }
+
+    if (differences === '') {
+      differences = 'No significant differences identified in the available data.\n';
+    }
+
+    return differences + '\n';
+  }
+
+  /**
+   * Describe a sibling's life path
+   */
+  describeSiblingLifePath(sibling) {
+    let path = `### ${sibling.name}\n\n`;
+
+    if (sibling.birthYear) {
+      path += `Born in ${sibling.birthYear}`;
+      if (sibling.birthPlace) path += ` in ${sibling.birthPlace}`;
+      path += '. ';
+    }
+
+    if (sibling.marriages.length > 0) {
+      path += `Married ${sibling.marriages.length} time(s). `;
+    }
+
+    if (sibling.children > 0) {
+      path += `Had ${sibling.children} children. `;
+    }
+
+    if (sibling.migrations.length > 0) {
+      path += `Migrated ${sibling.migrations.length} time(s). `;
+    }
+
+    if (sibling.deathYear) {
+      path += `Died in ${sibling.deathYear}`;
+      if (sibling.deathPlace) path += ` in ${sibling.deathPlace}`;
+      path += '.';
+    }
+
+    path += '\n\n';
+
+    // List significant events
+    if (sibling.events.length > 0) {
+      path += `**Key events:**\n`;
+      const significantEvents = sibling.events.filter(e =>
+        !['Birth', 'Death'].includes(e.type)
+      ).slice(0, 5); // Limit to 5 events
+
+      for (const event of significantEvents) {
+        path += `- ${event.type}`;
+        if (event.date) path += ` (${event.date})`;
+        if (event.location) path += ` in ${event.location}`;
+        path += '\n';
+      }
+      path += '\n';
+    }
+
+    return path;
   }
 
   async cleanup() {

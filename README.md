@@ -304,6 +304,59 @@ Generate a life summary in different narrative styles.
 - **chronological**: Timeline-focused view with ages at each event
 - **thematic**: Organized by themes (Origins, Family, Migration, Occupation & Service, Later Life)
 
+#### `gedcom_migration_story`
+Trace family movements and migrations across generations with rich geographic narrative.
+
+```json
+{
+  "startingPersonId": "@I123@",
+  "generations": 4,
+  "direction": "ancestors"
+}
+```
+
+**Parameters:**
+- **generations**: Number of generations to trace (default: 4)
+- **direction**: "ancestors" (backward in time), "descendants" (forward in time), or "both"
+
+**Output includes:**
+- Migration summary by generation
+- Detailed migration stories for each person
+- Migration patterns and insights
+- Most common locations
+- Immigration/emigration trends
+
+#### `gedcom_family_saga`
+Generate a chronological narrative spanning multiple family members, weaving their stories together.
+
+```json
+{
+  "familyIds": ["@I123@", "@I456@", "@I789@"],
+  "focusPersonId": "@I123@"
+}
+```
+
+**Output includes:**
+- Chronological timeline organized by decade
+- Individual life stories
+- Family connections and relationships
+- Overview of the time period covered
+
+#### `gedcom_sibling_comparison`
+Compare and contrast the life experiences of siblings.
+
+```json
+{
+  "siblingIds": ["@I123@", "@I456@", "@I789@"]
+}
+```
+
+**Output includes:**
+- Quick comparison table (birth/death years, lifespan, birthplace)
+- Similarities analysis (shared experiences, common patterns)
+- Differences analysis (lifespan variance, locations, family size, occupations)
+- Individual life paths for each sibling
+
 ## How to Export GEDCOM from Ancestry.com
 
 1. Log in to Ancestry.com
@@ -329,6 +382,9 @@ Once configured, you can use natural language:
 "How are @I123@ and @I456@ related?"
 "Give me a brief summary of @I123@'s life"
 "Show me a chronological timeline for @I123@"
+"Trace the migration story for @I123@ going back 4 generations"
+"Create a family saga for @I123@, @I456@, and @I789@"
+"Compare the lives of siblings @I123@ and @I456@"
 ```
 
 **Using Ancestry.com web scraping:**
