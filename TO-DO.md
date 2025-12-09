@@ -1,9 +1,10 @@
 # TODO: Ancestry MCP Server
 
 ## Recently Completed ✅
-- [x] **GEDCOM File Support** - Full implementation with 16 tools for storytelling and context
+- [x] **GEDCOM File Support** - Full implementation with 21 tools for storytelling, context, analytics, and search
 - [x] **Storytelling Tools (Complete)** - All storytelling features: relationship explainer, life summary (4 styles), migration story, family saga, sibling comparison, generational comparison, Q&A tool
-- [x] **Context Enrichment Tools** - Location history and era context for rich historical narratives
+- [x] **Context Enrichment Tools** - Location history and era context for rich historical narratives (refactored to return JSON data only)
+- [x] **Analytics & Search Tools** - Family statistics, date range analysis, people search, common ancestor finder, data validation
 - [x] **Security Fix** - Updated MCP SDK from 0.6.0 to 1.24.3 (fixed DNS rebinding vulnerability)
 - [x] **Session Persistence** - Saves login cookies to `.ancestry-session.json`
 - [x] **Screenshot Debugging** - Automatically captures screenshots on errors
@@ -30,8 +31,15 @@
 ### Context Enrichment
 - [ ] **gedcom_enrich_events** - Add historical/cultural context to specific life events
 - [ ] **gedcom_occupation_context** - Explain what their occupation meant in that era
-- [x] **gedcom_location_history** - Get historical info about places they lived
-- [x] **gedcom_era_context** - Describe what life was like during their lifetime
+- [x] **gedcom_location_history** - Get historical info about places they lived (returns JSON data)
+- [x] **gedcom_era_context** - Describe what life was like during their lifetime (returns JSON data)
+
+### Analytics & Search Tools (✅ COMPLETE)
+- [x] **gedcom_family_statistics** - Aggregate statistics across entire tree (demographics, lifespans, names, locations, migration, family sizes, data completeness)
+- [x] **gedcom_date_range_analysis** - Temporal patterns (date ranges, generations, century/decade distributions)
+- [x] **gedcom_find_people** - Search by criteria (location, dates, military, migration, missing data)
+- [x] **gedcom_find_common_ancestor** - Find most recent common ancestor (MRCA) with relationship paths
+- [x] **gedcom_validate_data** - Data quality validation (date inconsistencies, age inconsistencies, potential duplicates)
 
 ### Timeline Tools
 - [ ] **gedcom_timeline_comparison** - Compare timelines of multiple people side-by-side
@@ -234,27 +242,36 @@
 6. ✅ **gedcom_generational_comparison** - Compare parent vs child across generations
 7. ✅ **gedcom_ask_about_person** - Natural language Q&A about individuals
 
-### Phase 3 ✅ PARTIALLY COMPLETE - Context Enrichment
-1. [ ] Integrate web search for historical context
-2. [ ] **gedcom_occupation_context** - Explain occupations in historical context
-3. ✅ **gedcom_location_history** - Historical info about places (with built-in context)
-4. ✅ **gedcom_era_context** - What life was like during their lifetime (comprehensive)
-5. [ ] Add narrative templates (immigration, military, pioneer stories)
+### Phase 3 ✅ COMPLETE - Context Enrichment & Analytics
+**Goal: Provide data for LLM to add historical context and analyze patterns**
+1. ✅ **gedcom_location_history** - Returns JSON data about places lived (refactored from hard-coded context)
+2. ✅ **gedcom_era_context** - Returns JSON data about lifetime (refactored from hard-coded context)
+3. ✅ **gedcom_family_statistics** - Aggregate statistics across entire tree
+4. ✅ **gedcom_date_range_analysis** - Temporal patterns and distributions
+5. ✅ **gedcom_find_people** - Search by multiple criteria
+6. ✅ **gedcom_find_common_ancestor** - Find MRCA with relationship paths
+7. ✅ **gedcom_validate_data** - Data quality validation
 
-### Phase 4 - Additional Interactive Features
+**Key Design Principle**: Tools provide DATA, LLM provides INTELLIGENCE. All tools return structured JSON that the LLM interprets with its historical/analytical knowledge.
+
+### Phase 4 - Additional Context Features (Future)
+1. [ ] Integrate web search for real-time historical context
+2. [ ] **gedcom_occupation_context** - Occupation data for LLM to contextualize
+3. [ ] Add narrative templates (immigration, military, pioneer stories)
+
+### Phase 5 - Additional Interactive Features
 1. **gedcom_timeline_comparison** - Side-by-side timeline comparisons
 2. **gedcom_family_timeline** - Create combined timeline for entire family unit
 3. **gedcom_event_significance** - Explain significance of events in historical context
 4. **gedcom_enrich_events** - Add context to specific life events
 
-### Phase 5 - Web Scraping Enhancement
+### Phase 6 - Web Scraping Enhancement
 1. Test and fix all Ancestry.com selectors
 2. Verify login flow with real credentials
 3. Enhanced profile detail extraction
 4. Records and timeline extraction improvements
 
-### Phase 6 - Advanced Features
+### Phase 7 - Advanced Features
 1. PDF report generation
 2. Export to GEDCOM from web scraping
-3. Data validation and conflict detection
-4. Testing and performance optimization
+3. Testing and performance optimization

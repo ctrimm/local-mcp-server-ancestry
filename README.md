@@ -425,6 +425,115 @@ Returns structured JSON with lifetime data. The LLM uses this to describe what l
 
 **Design note:** Returns data only - Claude provides historical context about their era, major events, technology, and social conditions using its knowledge.
 
+#### `gedcom_family_statistics`
+Get aggregate statistics across the entire family tree. Returns JSON with analytics that require processing all individuals.
+
+```json
+{}
+```
+
+**Returns JSON with:**
+- `totalPeople`, `totalFamilies`: Overall counts
+- `genderDistribution`: Male, female, and unknown counts
+- `lifespanAnalysis`: Average lifespan and data points
+- `mostCommonNames`: Top 10 most frequent first names with counts
+- `mostCommonLocations`: Top 10 most frequent event locations with counts
+- `migrationStatistics`: People with multiple locations and migration percentage
+- `familySizeAnalysis`: Average children per family
+- `dataCompleteness`: Percentage of people with birth dates, death dates, and birth places
+
+**Design note:** Provides aggregate analytics the LLM cannot compute on its own. The LLM interprets patterns and trends.
+
+#### `gedcom_date_range_analysis`
+Analyze temporal patterns in the family tree. Returns JSON with date ranges, generation spans, and distribution metrics.
+
+```json
+{}
+```
+
+**Returns JSON with:**
+- `overallDateRange`: Earliest/latest years, time span, estimated generations
+- `birthDateRange`: Earliest/latest births, total with birth dates
+- `deathDateRange`: Earliest/latest deaths, total with death dates
+- `birthsByCentury`: Distribution of births by century
+- `birthsByDecade`: Distribution of births by decade
+
+**Design note:** Provides temporal analysis data. The LLM uses this to understand the historical scope of the tree.
+
+#### `gedcom_find_people`
+Search for people matching specific criteria. Returns JSON array of individuals matching the filters.
+
+```json
+{
+  "birthLocation": "New York",
+  "birthYearStart": 1850,
+  "birthYearEnd": 1900,
+  "hasMilitary": true,
+  "hasMigration": true,
+  "missingBirthDate": false,
+  "missingDeathDate": false
+}
+```
+
+**Available filters:**
+- `birthLocation`: Partial match on birth location (e.g., "New York")
+- `deathLocation`: Partial match on death location
+- `birthYearStart`: Minimum birth year
+- `birthYearEnd`: Maximum birth year
+- `hasMilitary`: Filter to people with military service (true/false)
+- `hasMigration`: Filter to people with multiple locations (true/false)
+- `missingBirthDate`: Filter to people missing birth dates (true/false)
+- `missingDeathDate`: Filter to people missing death dates (true/false)
+
+**Returns JSON with:**
+- `matchCount`: Number of matches found
+- `filters`: Echo of the filters used
+- `matches`: Array of matching individuals with id, name, birth/death data, and locations
+
+**Design note:** Provides filtered search results. All parameters are optional - omit to skip that filter.
+
+#### `gedcom_find_common_ancestor`
+Find the most recent common ancestor(s) of two people. Returns JSON with ancestor details and relationship paths.
+
+```json
+{
+  "person1Id": "@I123@",
+  "person2Id": "@I456@"
+}
+```
+
+**Returns JSON with:**
+- `person1`, `person2`: Names and IDs of the two people
+- `mostRecentCommonAncestor`: The MRCA with paths from each person and generation counts
+- `allCommonAncestors`: All common ancestors sorted by proximity
+- `totalCommonAncestors`: Count of all common ancestors
+
+**Design note:** Computes ancestry paths the LLM cannot traverse. The LLM interprets the relationship significance.
+
+#### `gedcom_validate_data`
+Validate data quality and find inconsistencies. Returns JSON with validation issues found.
+
+```json
+{
+  "checkDates": true,
+  "checkAges": true,
+  "checkDuplicates": true
+}
+```
+
+**Validation checks:**
+- **Date inconsistencies** (if checkDates=true): Death before birth, events before birth, events after death
+- **Age inconsistencies** (if checkAges=true): Unrealistic lifespans (>120 years), marriage too young (<12), children born when parent was too young (<12) or too old (>60)
+- **Potential duplicates** (if checkDuplicates=true): Same name with similar birth years (within 5 years)
+
+**Returns JSON with:**
+- `totalIssues`: Count of all issues
+- `errorCount`, `warningCount`, `infoCount`: Issues by severity
+- `issuesByType`: Breakdown by issue type
+- `issues`: Array of all issues with type, severity, individual ID, name, and description
+
+**Design note:** All parameters are optional and default to true. Provides data quality analysis the LLM uses to identify genealogy research problems.
+
 ## How to Export GEDCOM from Ancestry.com
 
 1. Log in to Ancestry.com
@@ -458,6 +567,12 @@ Once configured, you can use natural language:
 "How many children did @I123@ have?" (Q&A tool)
 "Tell me about the places where @I123@ lived"
 "What was life like during @I123@'s lifetime?"
+"Show me family statistics across the entire tree"
+"Analyze the date ranges in my family tree"
+"Find all people born in New York between 1850 and 1900"
+"Find people with military service"
+"Who is the common ancestor of @I123@ and @I456@?"
+"Validate the data quality in my family tree"
 ```
 
 **Using Ancestry.com web scraping:**

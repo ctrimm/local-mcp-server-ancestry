@@ -603,6 +603,106 @@ class AncestryMCPServer {
             required: ['individualId'],
           },
         },
+        {
+          name: 'gedcom_family_statistics',
+          description: 'Get aggregate statistics across the entire family tree. Returns JSON with analytics that require processing all individuals.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: 'gedcom_date_range_analysis',
+          description: 'Analyze temporal patterns in the family tree. Returns JSON with date ranges, generation spans, and data completeness metrics.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: 'gedcom_find_people',
+          description: 'Search for people matching specific criteria. Returns JSON array of individuals matching the filters.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              birthLocation: {
+                type: 'string',
+                description: 'Filter by birth location (partial match)',
+              },
+              deathLocation: {
+                type: 'string',
+                description: 'Filter by death location (partial match)',
+              },
+              birthYearStart: {
+                type: 'number',
+                description: 'Filter by birth year range start',
+              },
+              birthYearEnd: {
+                type: 'number',
+                description: 'Filter by birth year range end',
+              },
+              hasMilitary: {
+                type: 'boolean',
+                description: 'Filter for people with military service',
+              },
+              hasMigration: {
+                type: 'boolean',
+                description: 'Filter for people who migrated (different birth/death locations)',
+              },
+              missingBirthDate: {
+                type: 'boolean',
+                description: 'Filter for people missing birth date',
+              },
+              missingDeathDate: {
+                type: 'boolean',
+                description: 'Filter for people missing death date',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'gedcom_find_common_ancestor',
+          description: 'Find the most recent common ancestor(s) of two people. Returns JSON with ancestor details and relationship paths.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              person1Id: {
+                type: 'string',
+                description: 'First person ID',
+              },
+              person2Id: {
+                type: 'string',
+                description: 'Second person ID',
+              },
+            },
+            required: ['person1Id', 'person2Id'],
+          },
+        },
+        {
+          name: 'gedcom_validate_data',
+          description: 'Validate data quality and find inconsistencies. Returns JSON with validation issues found.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              checkDates: {
+                type: 'boolean',
+                description: 'Check for date inconsistencies (default: true)',
+              },
+              checkAges: {
+                type: 'boolean',
+                description: 'Check for age anomalies (default: true)',
+              },
+              checkDuplicates: {
+                type: 'boolean',
+                description: 'Check for potential duplicates (default: true)',
+              },
+            },
+            required: [],
+          },
+        },
       ],
     }));
 
@@ -680,6 +780,21 @@ class AncestryMCPServer {
 
           case 'gedcom_era_context':
             return await this.gedcomEraContext(args.individualId, args.includeWorldEvents !== false);
+
+          case 'gedcom_family_statistics':
+            return await this.gedcomFamilyStatistics();
+
+          case 'gedcom_date_range_analysis':
+            return await this.gedcomDateRangeAnalysis();
+
+          case 'gedcom_find_people':
+            return await this.gedcomFindPeople(args);
+
+          case 'gedcom_find_common_ancestor':
+            return await this.gedcomFindCommonAncestor(args.person1Id, args.person2Id);
+
+          case 'gedcom_validate_data':
+            return await this.gedcomValidateData(args.checkDates !== false, args.checkAges !== false, args.checkDuplicates !== false);
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -3761,6 +3876,639 @@ class AncestryMCPServer {
         year: this.extractYear(e.date),
         location: e.location,
       })),
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2),
+      }],
+    };
+  }
+
+  async gedcomFamilyStatistics() {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individuals = Array.from(this.gedcomIndex.individuals.values());
+    const families = Array.from(this.gedcomIndex.families.values());
+
+    // Calculate aggregate statistics
+    const totalPeople = individuals.length;
+    const totalFamilies = families.length;
+
+    // Gender distribution
+    const maleCount = individuals.filter(p => p.sex?.[0]?.value === 'M').length;
+    const femaleCount = individuals.filter(p => p.sex?.[0]?.value === 'F').length;
+    const unknownGender = totalPeople - maleCount - femaleCount;
+
+    // Lifespan analysis
+    const lifespans = [];
+    for (const person of individuals) {
+      const events = this.extractEvents(person);
+      const birthEvent = events.find(e => e.type === 'Birth');
+      const deathEvent = events.find(e => e.type === 'Death');
+      const birthYear = this.extractYear(birthEvent?.date);
+      const deathYear = this.extractYear(deathEvent?.date);
+      if (birthYear && deathYear && deathYear > birthYear) {
+        lifespans.push(deathYear - birthYear);
+      }
+    }
+
+    const averageLifespan = lifespans.length > 0
+      ? Math.round(lifespans.reduce((a, b) => a + b, 0) / lifespans.length)
+      : null;
+
+    // Name frequency analysis
+    const nameFrequency = new Map();
+    for (const person of individuals) {
+      const name = this.extractName(person);
+      const firstName = name.split(' ')[0];
+      nameFrequency.set(firstName, (nameFrequency.get(firstName) || 0) + 1);
+    }
+
+    const mostCommonNames = Array.from(nameFrequency.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, count]) => ({ name, count }));
+
+    // Location frequency
+    const locationFrequency = new Map();
+    for (const person of individuals) {
+      const events = this.extractEvents(person);
+      for (const event of events) {
+        if (event.location) {
+          locationFrequency.set(event.location, (locationFrequency.get(event.location) || 0) + 1);
+        }
+      }
+    }
+
+    const mostCommonLocations = Array.from(locationFrequency.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([location, count]) => ({ location, count }));
+
+    // Migration analysis
+    const peopleWithMultipleLocations = individuals.filter(person => {
+      const events = this.extractEvents(person);
+      const uniqueLocations = new Set(events.filter(e => e.location).map(e => e.location));
+      return uniqueLocations.size > 1;
+    }).length;
+
+    // Family size analysis
+    const familySizes = families.map(family => {
+      const childCount = family.children?.length || 0;
+      return childCount;
+    }).filter(size => size > 0);
+
+    const averageFamilySize = familySizes.length > 0
+      ? (familySizes.reduce((a, b) => a + b, 0) / familySizes.length).toFixed(1)
+      : null;
+
+    // Data completeness
+    const withBirthDate = individuals.filter(p => {
+      const events = this.extractEvents(p);
+      return events.some(e => e.type === 'Birth' && e.date);
+    }).length;
+
+    const withDeathDate = individuals.filter(p => {
+      const events = this.extractEvents(p);
+      return events.some(e => e.type === 'Death' && e.date);
+    }).length;
+
+    const withBirthPlace = individuals.filter(p => {
+      const events = this.extractEvents(p);
+      return events.some(e => e.type === 'Birth' && e.location);
+    }).length;
+
+    const result = {
+      totalPeople,
+      totalFamilies,
+      genderDistribution: {
+        male: maleCount,
+        female: femaleCount,
+        unknown: unknownGender,
+      },
+      lifespanAnalysis: {
+        averageLifespan,
+        lifespanDataPoints: lifespans.length,
+      },
+      mostCommonNames,
+      mostCommonLocations,
+      migrationStatistics: {
+        peopleWithMultipleLocations,
+        migrationPercentage: totalPeople > 0
+          ? ((peopleWithMultipleLocations / totalPeople) * 100).toFixed(1)
+          : null,
+      },
+      familySizeAnalysis: {
+        averageChildrenPerFamily: averageFamilySize,
+        familiesWithChildren: familySizes.length,
+      },
+      dataCompleteness: {
+        withBirthDate,
+        withBirthDatePercentage: ((withBirthDate / totalPeople) * 100).toFixed(1),
+        withDeathDate,
+        withDeathDatePercentage: ((withDeathDate / totalPeople) * 100).toFixed(1),
+        withBirthPlace,
+        withBirthPlacePercentage: ((withBirthPlace / totalPeople) * 100).toFixed(1),
+      },
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2),
+      }],
+    };
+  }
+
+  async gedcomDateRangeAnalysis() {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individuals = Array.from(this.gedcomIndex.individuals.values());
+
+    // Collect all years
+    const birthYears = [];
+    const deathYears = [];
+    const allEventYears = [];
+
+    for (const person of individuals) {
+      const events = this.extractEvents(person);
+      for (const event of events) {
+        const year = this.extractYear(event.date);
+        if (year) {
+          allEventYears.push(year);
+          if (event.type === 'Birth') birthYears.push(year);
+          if (event.type === 'Death') deathYears.push(year);
+        }
+      }
+    }
+
+    const earliestYear = allEventYears.length > 0 ? Math.min(...allEventYears) : null;
+    const latestYear = allEventYears.length > 0 ? Math.max(...allEventYears) : null;
+    const timeSpan = (earliestYear && latestYear) ? latestYear - earliestYear : null;
+
+    const earliestBirth = birthYears.length > 0 ? Math.min(...birthYears) : null;
+    const latestBirth = birthYears.length > 0 ? Math.max(...birthYears) : null;
+
+    const earliestDeath = deathYears.length > 0 ? Math.min(...deathYears) : null;
+    const latestDeath = deathYears.length > 0 ? Math.max(...deathYears) : null;
+
+    // Generation span estimate (average 25-30 years per generation)
+    const estimatedGenerations = timeSpan ? Math.round(timeSpan / 25) : null;
+
+    // Century distribution
+    const centuryDistribution = new Map();
+    for (const year of birthYears) {
+      const century = Math.floor(year / 100) + 1;
+      centuryDistribution.set(century, (centuryDistribution.get(century) || 0) + 1);
+    }
+
+    const birthsByCentury = Array.from(centuryDistribution.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([century, count]) => ({
+        century: `${century}th`,
+        count,
+      }));
+
+    // Decade distribution for births
+    const decadeDistribution = new Map();
+    for (const year of birthYears) {
+      const decade = Math.floor(year / 10) * 10;
+      decadeDistribution.set(decade, (decadeDistribution.get(decade) || 0) + 1);
+    }
+
+    const birthsByDecade = Array.from(decadeDistribution.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([decade, count]) => ({
+        decade: `${decade}s`,
+        count,
+      }));
+
+    const result = {
+      overallDateRange: {
+        earliestYear,
+        latestYear,
+        timeSpan,
+        estimatedGenerations,
+      },
+      birthDateRange: {
+        earliestBirth,
+        latestBirth,
+        totalWithBirthDates: birthYears.length,
+      },
+      deathDateRange: {
+        earliestDeath,
+        latestDeath,
+        totalWithDeathDates: deathYears.length,
+      },
+      birthsByCentury,
+      birthsByDecade,
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2),
+      }],
+    };
+  }
+
+  async gedcomFindPeople(filters = {}) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individuals = Array.from(this.gedcomIndex.individuals.values());
+    const matches = [];
+
+    for (const person of individuals) {
+      const id = person.pointer;
+      const name = this.extractName(person);
+      const events = this.extractEvents(person);
+      const birthEvent = events.find(e => e.type === 'Birth');
+      const deathEvent = events.find(e => e.type === 'Death');
+      const birthYear = this.extractYear(birthEvent?.date);
+      const deathYear = this.extractYear(deathEvent?.date);
+
+      // Apply filters
+      let matches_filters = true;
+
+      // Birth location filter
+      if (filters.birthLocation && birthEvent?.location) {
+        if (!birthEvent.location.toLowerCase().includes(filters.birthLocation.toLowerCase())) {
+          matches_filters = false;
+        }
+      } else if (filters.birthLocation) {
+        matches_filters = false;
+      }
+
+      // Death location filter
+      if (filters.deathLocation && deathEvent?.location) {
+        if (!deathEvent.location.toLowerCase().includes(filters.deathLocation.toLowerCase())) {
+          matches_filters = false;
+        }
+      } else if (filters.deathLocation) {
+        matches_filters = false;
+      }
+
+      // Birth year range filter
+      if (filters.birthYearStart && birthYear && birthYear < filters.birthYearStart) {
+        matches_filters = false;
+      }
+      if (filters.birthYearEnd && birthYear && birthYear > filters.birthYearEnd) {
+        matches_filters = false;
+      }
+
+      // Military service filter
+      if (filters.hasMilitary === true) {
+        const hasMilitary = events.some(e =>
+          e.type === 'Military' ||
+          e.description?.toLowerCase().includes('military') ||
+          e.description?.toLowerCase().includes('army') ||
+          e.description?.toLowerCase().includes('navy') ||
+          e.description?.toLowerCase().includes('war')
+        );
+        if (!hasMilitary) matches_filters = false;
+      }
+
+      // Migration filter (multiple locations)
+      if (filters.hasMigration === true) {
+        const uniqueLocations = new Set(events.filter(e => e.location).map(e => e.location));
+        if (uniqueLocations.size <= 1) matches_filters = false;
+      }
+
+      // Missing data filters
+      if (filters.missingBirthDate === true && birthEvent?.date) {
+        matches_filters = false;
+      }
+      if (filters.missingDeathDate === true && deathEvent?.date) {
+        matches_filters = false;
+      }
+
+      if (matches_filters) {
+        matches.push({
+          id,
+          name,
+          birthDate: birthEvent?.date || null,
+          birthYear,
+          birthPlace: birthEvent?.location || null,
+          deathDate: deathEvent?.date || null,
+          deathYear,
+          deathPlace: deathEvent?.location || null,
+        });
+      }
+    }
+
+    const result = {
+      matchCount: matches.length,
+      filters: filters,
+      matches,
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2),
+      }],
+    };
+  }
+
+  async gedcomFindCommonAncestor(person1Id, person2Id) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const person1 = this.gedcomIndex.individuals.get(person1Id);
+    const person2 = this.gedcomIndex.individuals.get(person2Id);
+
+    if (!person1) throw new Error(`Individual ${person1Id} not found.`);
+    if (!person2) throw new Error(`Individual ${person2Id} not found.`);
+
+    // Get all ancestors for person1 with paths
+    const ancestors1 = new Map(); // id -> path array
+    const queue1 = [{ id: person1Id, path: [] }];
+    const visited1 = new Set([person1Id]);
+
+    while (queue1.length > 0) {
+      const { id, path } = queue1.shift();
+      ancestors1.set(id, path);
+
+      const person = this.gedcomIndex.individuals.get(id);
+      const parents = this.getParents(person);
+
+      for (const parent of parents) {
+        if (!visited1.has(parent.pointer)) {
+          visited1.add(parent.pointer);
+          queue1.push({
+            id: parent.pointer,
+            path: [...path, { id: parent.pointer, name: this.extractName(parent) }],
+          });
+        }
+      }
+    }
+
+    // Find common ancestors by checking person2's ancestors
+    const commonAncestors = [];
+    const queue2 = [{ id: person2Id, path: [] }];
+    const visited2 = new Set([person2Id]);
+
+    while (queue2.length > 0) {
+      const { id, path } = queue2.shift();
+
+      if (ancestors1.has(id) && id !== person1Id && id !== person2Id) {
+        // Found a common ancestor
+        const ancestor = this.gedcomIndex.individuals.get(id);
+        commonAncestors.push({
+          id,
+          name: this.extractName(ancestor),
+          pathFromPerson1: ancestors1.get(id),
+          pathFromPerson2: path,
+          generationsFromPerson1: ancestors1.get(id).length,
+          generationsFromPerson2: path.length,
+        });
+      }
+
+      const person = this.gedcomIndex.individuals.get(id);
+      const parents = this.getParents(person);
+
+      for (const parent of parents) {
+        if (!visited2.has(parent.pointer)) {
+          visited2.add(parent.pointer);
+          queue2.push({
+            id: parent.pointer,
+            path: [...path, { id: parent.pointer, name: this.extractName(parent) }],
+          });
+        }
+      }
+    }
+
+    // Find the most recent common ancestor (MRCA) - shortest combined path
+    let mrca = null;
+    if (commonAncestors.length > 0) {
+      commonAncestors.sort((a, b) => {
+        const totalA = a.generationsFromPerson1 + a.generationsFromPerson2;
+        const totalB = b.generationsFromPerson1 + b.generationsFromPerson2;
+        return totalA - totalB;
+      });
+      mrca = commonAncestors[0];
+    }
+
+    const result = {
+      person1: {
+        id: person1Id,
+        name: this.extractName(person1),
+      },
+      person2: {
+        id: person2Id,
+        name: this.extractName(person2),
+      },
+      mostRecentCommonAncestor: mrca,
+      allCommonAncestors: commonAncestors,
+      totalCommonAncestors: commonAncestors.length,
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2),
+      }],
+    };
+  }
+
+  async gedcomValidateData(checkDates = true, checkAges = true, checkDuplicates = true) {
+    if (!this.gedcomData) {
+      throw new Error('No GEDCOM file loaded. Use gedcom_load first.');
+    }
+
+    const individuals = Array.from(this.gedcomIndex.individuals.values());
+    const issues = [];
+
+    for (const person of individuals) {
+      const id = person.pointer;
+      const name = this.extractName(person);
+      const events = this.extractEvents(person);
+      const birthEvent = events.find(e => e.type === 'Birth');
+      const deathEvent = events.find(e => e.type === 'Death');
+      const birthYear = this.extractYear(birthEvent?.date);
+      const deathYear = this.extractYear(deathEvent?.date);
+
+      // Date inconsistencies
+      if (checkDates) {
+        // Death before birth
+        if (birthYear && deathYear && deathYear < birthYear) {
+          issues.push({
+            type: 'date_inconsistency',
+            severity: 'error',
+            individualId: id,
+            individualName: name,
+            description: `Death year (${deathYear}) is before birth year (${birthYear})`,
+          });
+        }
+
+        // Events before birth
+        for (const event of events) {
+          if (event.type !== 'Birth') {
+            const eventYear = this.extractYear(event.date);
+            if (birthYear && eventYear && eventYear < birthYear) {
+              issues.push({
+                type: 'date_inconsistency',
+                severity: 'error',
+                individualId: id,
+                individualName: name,
+                description: `${event.type} event (${eventYear}) is before birth (${birthYear})`,
+              });
+            }
+          }
+        }
+
+        // Events after death
+        for (const event of events) {
+          if (event.type !== 'Death') {
+            const eventYear = this.extractYear(event.date);
+            if (deathYear && eventYear && eventYear > deathYear) {
+              issues.push({
+                type: 'date_inconsistency',
+                severity: 'warning',
+                individualId: id,
+                individualName: name,
+                description: `${event.type} event (${eventYear}) is after death (${deathYear})`,
+              });
+            }
+          }
+        }
+      }
+
+      // Age inconsistencies
+      if (checkAges) {
+        // Unrealistic lifespan (> 120 years)
+        if (birthYear && deathYear) {
+          const lifespan = deathYear - birthYear;
+          if (lifespan > 120) {
+            issues.push({
+              type: 'age_inconsistency',
+              severity: 'warning',
+              individualId: id,
+              individualName: name,
+              description: `Lifespan of ${lifespan} years seems unrealistic`,
+            });
+          }
+          if (lifespan < 0) {
+            issues.push({
+              type: 'age_inconsistency',
+              severity: 'error',
+              individualId: id,
+              individualName: name,
+              description: `Negative lifespan (${lifespan} years)`,
+            });
+          }
+        }
+
+        // Marriage too young (< 12 years old)
+        const marriageEvents = events.filter(e => e.type === 'Marriage');
+        for (const marriage of marriageEvents) {
+          const marriageYear = this.extractYear(marriage.date);
+          if (birthYear && marriageYear) {
+            const ageAtMarriage = marriageYear - birthYear;
+            if (ageAtMarriage < 12) {
+              issues.push({
+                type: 'age_inconsistency',
+                severity: 'warning',
+                individualId: id,
+                individualName: name,
+                description: `Marriage at age ${ageAtMarriage} seems unrealistic`,
+              });
+            }
+          }
+        }
+
+        // Children born too young/old
+        const childFamilies = person.familyAsSpouse || [];
+        for (const famPointer of childFamilies) {
+          const family = this.gedcomIndex.families.get(famPointer);
+          if (family?.children) {
+            for (const childPointer of family.children) {
+              const child = this.gedcomIndex.individuals.get(childPointer);
+              if (child) {
+                const childEvents = this.extractEvents(child);
+                const childBirthEvent = childEvents.find(e => e.type === 'Birth');
+                const childBirthYear = this.extractYear(childBirthEvent?.date);
+
+                if (birthYear && childBirthYear) {
+                  const ageAtChildBirth = childBirthYear - birthYear;
+                  if (ageAtChildBirth < 12 || ageAtChildBirth > 60) {
+                    issues.push({
+                      type: 'age_inconsistency',
+                      severity: 'warning',
+                      individualId: id,
+                      individualName: name,
+                      description: `Had child at age ${ageAtChildBirth} (child: ${this.extractName(child)})`,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Check for potential duplicates
+    if (checkDuplicates) {
+      const nameGroups = new Map();
+      for (const person of individuals) {
+        const name = this.extractName(person);
+        if (!nameGroups.has(name)) {
+          nameGroups.set(name, []);
+        }
+        nameGroups.get(name).push(person);
+      }
+
+      for (const [name, people] of nameGroups.entries()) {
+        if (people.length > 1) {
+          // Check if they have similar birth years (within 5 years)
+          const birthYears = people.map(p => {
+            const events = this.extractEvents(p);
+            const birthEvent = events.find(e => e.type === 'Birth');
+            return this.extractYear(birthEvent?.date);
+          }).filter(y => y !== null);
+
+          if (birthYears.length >= 2) {
+            for (let i = 0; i < birthYears.length; i++) {
+              for (let j = i + 1; j < birthYears.length; j++) {
+                if (Math.abs(birthYears[i] - birthYears[j]) <= 5) {
+                  issues.push({
+                    type: 'potential_duplicate',
+                    severity: 'info',
+                    individualId: people[i].pointer,
+                    individualName: name,
+                    description: `Potential duplicate: "${name}" with similar birth years (${birthYears[i]} and ${birthYears[j]})`,
+                    relatedIndividuals: people.map(p => ({ id: p.pointer, name: this.extractName(p) })),
+                  });
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const result = {
+      totalIssues: issues.length,
+      errorCount: issues.filter(i => i.severity === 'error').length,
+      warningCount: issues.filter(i => i.severity === 'warning').length,
+      infoCount: issues.filter(i => i.severity === 'info').length,
+      issuesByType: {
+        dateInconsistencies: issues.filter(i => i.type === 'date_inconsistency').length,
+        ageInconsistencies: issues.filter(i => i.type === 'age_inconsistency').length,
+        potentialDuplicates: issues.filter(i => i.type === 'potential_duplicate').length,
+      },
+      issues,
     };
 
     return {
