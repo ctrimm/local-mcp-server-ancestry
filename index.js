@@ -255,20 +255,34 @@ class AncestryMCPServer {
 
     try {
       await this.page.goto('https://www.ancestry.com/account/signin', {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
+        timeout: 60000, // 60 second timeout
       });
+
+      // Wait for login form to be ready
+      await this.page.waitForSelector('input[name="username"]', { timeout: 10000 });
 
       // Fill in login form
       await this.page.fill('input[name="username"]', this.username);
       await this.page.fill('input[name="password"]', this.password);
-      
+
       // Click sign in
       await this.page.click('button[type="submit"]');
-      
-      // Wait for navigation
-      await this.page.waitForLoadState('networkidle');
+
+      // Wait for navigation with longer timeout
+      await this.page.waitForLoadState('domcontentloaded', { timeout: 60000 });
+
+      // Verify we're logged in by checking for user-specific elements
+      const currentUrl = this.page.url();
+      console.error(`[DEBUG] After login, URL is: ${currentUrl}`);
+
+      // Check if we're actually logged in (not still on signin page)
+      if (currentUrl.includes('signin') || currentUrl.includes('login')) {
+        throw new Error('Login appears to have failed - still on signin page');
+      }
 
       this.isLoggedIn = true;
+      console.error(`[DEBUG] Login successful!`);
 
       return {
         content: [
@@ -289,52 +303,175 @@ class AncestryMCPServer {
     const { firstName, lastName, birthYear, deathYear, location } = args;
 
     try {
-      // Go to search page
-      await this.page.goto('https://www.ancestry.com/search/', {
-        waitUntil: 'networkidle',
+      console.error(`[DEBUG] Starting search - logged in status: ${this.isLoggedIn}`);
+
+      // Go to advanced search page
+      console.error(`[DEBUG] Navigating to advanced search page...`);
+      await this.page.goto('https://www.ancestry.com/search/?searchMode=advanced&searchOrigin=navigation_header', {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000,
       });
 
-      // Fill search form
-      await this.page.fill('input[name="firstname"]', firstName);
-      await this.page.fill('input[name="lastname"]', lastName);
-      
-      if (birthYear) {
-        await this.page.fill('input[name="birth"]', birthYear);
-      }
-      if (deathYear) {
-        await this.page.fill('input[name="death"]', deathYear);
-      }
-      if (location) {
-        await this.page.fill('input[name="location"]', location);
-      }
-
-      // Submit search
-      await this.page.click('button[type="submit"]');
-      await this.page.waitForLoadState('networkidle');
-
-      // Extract search results
-      const results = await this.page.evaluate(() => {
-        const resultElements = document.querySelectorAll('.searchResult');
-        return Array.from(resultElements).slice(0, 10).map(el => {
-          const nameEl = el.querySelector('.name');
-          const birthEl = el.querySelector('.birth');
-          const deathEl = el.querySelector('.death');
-          const linkEl = el.querySelector('a');
-          
-          return {
-            name: nameEl?.textContent?.trim() || '',
-            birth: birthEl?.textContent?.trim() || '',
-            death: deathEl?.textContent?.trim() || '',
-            url: linkEl?.href || '',
-          };
+      // Verify we're still logged in (check for sign in button)
+      const signInButton = await this.page.$('a:has-text("Sign In")');
+      if (signInButton) {
+        console.error(`[WARNING] Found 'Sign In' button - may not be logged in!`);
+        // Try to login again
+        this.isLoggedIn = false;
+        await this.ensureLoggedIn();
+        // Navigate back to search page
+        await this.page.goto('https://www.ancestry.com/search/?searchMode=advanced&searchOrigin=navigation_header', {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000,
         });
+      }
+
+      // Fill search form with correct selectors
+      console.error(`[DEBUG] Filling first name: ${firstName}`);
+      await this.page.fill('input[name="txtfirstname"]', firstName);
+
+      console.error(`[DEBUG] Filling last name: ${lastName}`);
+      await this.page.fill('input[name="sfsLastNameExactModule"]', lastName);
+
+      if (birthYear) {
+        console.error(`[DEBUG] Filling birth year: ${birthYear}`);
+        await this.page.fill('#sfs_EstBirthYearExact', birthYear);
+      }
+
+      if (location) {
+        console.error(`[DEBUG] Filling location: ${location}`);
+        await this.page.fill('input[aria-label="Place your ancestor might have lived"]', location);
+      }
+
+      // Note: Death year will be used in modal dialog filtering, not in initial form
+      // This simplifies the search process and avoids timeout issues
+
+      // Submit search by pressing Enter
+      console.error(`[DEBUG] Submitting search with Enter key...`);
+      await this.page.keyboard.press('Enter');
+
+      // Handle the "Improve your results" modal dialog
+      try {
+        // Wait for modal to appear (timeout after 5 seconds if it doesn't)
+        await this.page.waitForSelector('dialog', { timeout: 5000 });
+        console.error(`[DEBUG] Modal dialog appeared, handling it...`);
+
+        // Step 1: Location - fill if provided, otherwise skip
+        if (location) {
+          console.error(`[DEBUG] Filling location in modal: ${location}`);
+          const locationInput = await this.page.$('dialog input[placeholder*="Country"], dialog combobox');
+          if (locationInput) {
+            await locationInput.fill(location);
+            await this.page.waitForTimeout(300);
+          }
+          const continueButton = await this.page.$('dialog button:has-text("Continue")');
+          if (continueButton) await continueButton.click();
+        } else {
+          const step1Button = await this.page.$('button:has-text("I don\'t know")');
+          if (step1Button) {
+            console.error(`[DEBUG] Clicking 'I don't know' for step 1...`);
+            await step1Button.click();
+          }
+        }
+        await this.page.waitForTimeout(500);
+
+        // Step 2: Birth year - fill if provided, otherwise skip
+        if (birthYear) {
+          console.error(`[DEBUG] Filling birth year in modal: ${birthYear}`);
+          const birthInput = await this.page.$('dialog input[placeholder*="1920"]');
+          if (birthInput) {
+            await birthInput.fill(birthYear);
+            await this.page.waitForTimeout(300);
+          }
+          const continueButton = await this.page.$('dialog button:has-text("Continue")');
+          if (continueButton) await continueButton.click();
+        } else {
+          const step2Button = await this.page.$('button:has-text("I don\'t know")');
+          if (step2Button) {
+            console.error(`[DEBUG] Clicking 'I don't know' for step 2...`);
+            await step2Button.click();
+          }
+        }
+        await this.page.waitForTimeout(500);
+
+        // Step 3: Relatives - just click "Search" to finish
+        const searchButton = await this.page.$('dialog button:has-text("Search")');
+        if (searchButton) {
+          console.error(`[DEBUG] Clicking 'Search' to complete modal...`);
+          await searchButton.click();
+        }
+      } catch (error) {
+        console.error(`[DEBUG] No modal dialog appeared or error handling it: ${error.message}`);
+      }
+
+      await this.page.waitForLoadState('domcontentloaded', { timeout: 60000 });
+      console.error(`[DEBUG] Results page loaded, extracting results...`);
+
+      // Debug: Save page content and screenshot
+      const pageContent = await this.page.content();
+      console.error(`[DEBUG] Page URL: ${this.page.url()}`);
+      console.error(`[DEBUG] Page title: ${await this.page.title()}`);
+      console.error(`[DEBUG] Page content length: ${pageContent.length} chars`);
+
+      // Save HTML to file for inspection
+      const fs = require('fs');
+      fs.writeFileSync('/tmp/ancestry-results.html', pageContent);
+      console.error(`[DEBUG] HTML saved to /tmp/ancestry-results.html`);
+
+      // Take a screenshot for debugging
+      await this.page.screenshot({ path: '/tmp/ancestry-results.png', fullPage: true });
+      console.error(`[DEBUG] Screenshot saved to /tmp/ancestry-results.png`);
+
+      // Extract search results from the actual page structure (limit to 10 for efficiency)
+      const results = await this.page.evaluate(() => {
+        const results = [];
+
+        // Try to find result containers - Ancestry uses various structures
+        const resultContainers = document.querySelectorAll('li[role="listitem"]');
+
+        for (let i = 0; i < Math.min(resultContainers.length, 10); i++) {
+          const container = resultContainers[i];
+
+          // Extract collection name and URL from the heading link
+          const headingLink = container.querySelector('a[href*="/collections/"], a[href*="/search/"]');
+          const collection = headingLink?.textContent?.trim() || '';
+          const url = headingLink?.href || '';
+
+          // Extract record details from the text content
+          const textContent = container.textContent;
+
+          // Look for name, birth, death, residence patterns
+          const nameMatch = textContent.match(/Name[:\s]+([^\n]+)/i);
+          const birthMatch = textContent.match(/Birth[:\s]+([^\n]+)/i);
+          const deathMatch = textContent.match(/Death[:\s]+([^\n]+)/i);
+          const residenceMatch = textContent.match(/Residence[:\s]+([^\n]+)/i);
+
+          if (collection || nameMatch) {
+            results.push({
+              collection: collection,
+              url: url,
+              name: nameMatch ? nameMatch[1].trim() : '',
+              birth: birthMatch ? birthMatch[1].trim() : '',
+              death: deathMatch ? deathMatch[1].trim() : '',
+              residence: residenceMatch ? residenceMatch[1].trim() : ''
+            });
+          }
+        }
+
+        return results;
       });
+
+      // Format response with summary
+      const summary = `Found ${results.length} results for ${firstName} ${lastName}${birthYear ? ` (b. ${birthYear})` : ''}${deathYear ? ` (d. ${deathYear})` : ''}\n\nTop ${results.length} results:\n`;
+      const formattedResults = results.map((r, i) =>
+        `${i + 1}. ${r.name || 'Unknown'}\n   Collection: ${r.collection}\n   Birth: ${r.birth || 'N/A'}\n   Death: ${r.death || 'N/A'}\n   Residence: ${r.residence || 'N/A'}\n   URL: ${r.url}`
+      ).join('\n\n');
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ results, count: results.length }, null, 2),
+            text: summary + formattedResults,
           },
         ],
       };
