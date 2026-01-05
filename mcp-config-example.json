@@ -1,0 +1,17 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/config.json",
+  "mcpServers": {
+    "ancestry": {
+      "command": "node",
+      "args": ["/REPLACE/WITH/ABSOLUTE/PATH/TO/local-mcp-server-ancestry/index.js"],
+      "env": {
+        "ANCESTRY_USERNAME": "your-username@email.com",
+        "ANCESTRY_PASSWORD": "your-password"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
+}

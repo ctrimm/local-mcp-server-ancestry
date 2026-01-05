@@ -2,18 +2,134 @@
 
 Get up and running with the Ancestry MCP Server in 5 minutes.
 
-## Prerequisites
+## Two Setup Options
+
+**Option A: Claude Code CLI with Dual MCP Servers** (Recommended)
+- Most powerful setup
+- Ancestry + Playwright MCP servers working together
+- See [Dual Server Setup](#dual-server-setup-claude-code-cli) below
+
+**Option B: Claude Desktop (Single Server)**
+- Simpler setup
+- Just Ancestry MCP server
+- See [Claude Desktop Setup](#claude-desktop-setup) below
+
+---
+
+## Dual Server Setup (Claude Code CLI)
+
+Get both Ancestry and Playwright MCP servers running together.
+
+### Prerequisites
 
 - Node.js 18+ installed
 - Active Ancestry.com subscription
-- Claude Desktop app (or another MCP-compatible client)
+- Claude Code CLI installed
 
-## Setup Steps
+### Setup Steps
+
+#### 1. Install Ancestry Server
+
+```bash
+cd local-mcp-server-ancestry
+npm install
+npx playwright install chromium
+```
+
+#### 2. Create MCP Configuration
+
+Copy the example config:
+
+```bash
+cp mcp-config-example.json ~/.config/claude-code/mcp.json
+```
+
+Edit `~/.config/claude-code/mcp.json` and update:
+- Replace `/REPLACE/WITH/ABSOLUTE/PATH/TO/` with actual path to this directory
+- Add your Ancestry.com credentials
+
+#### 3. Start Claude Code
+
+```bash
+claude-code
+```
+
+Both servers will start automatically!
+
+#### 4. Test Both Servers
+
+```
+> List available MCP tools
+```
+
+You should see tools from both ancestry and playwright servers.
+
+### Example Dual Server Workflows
+
+**Genealogy Research with Enhanced Browser Control:**
+
+```
+> Login to Ancestry and search for "John Smith" born 1850 in New York
+
+> Get details of the first result
+
+> Use Playwright to navigate to the census record link and take a screenshot
+
+> Extract text from the screenshot and add it to the person's timeline
+```
+
+**Automated Family Tree Documentation:**
+
+```
+> Search Ancestry for "Mary Johnson" born 1920
+
+> Get her family tree for 3 generations
+
+> For each person found, use Playwright to navigate to their profile
+  and capture screenshots of important records
+
+> Generate a comprehensive family history narrative
+```
+
+### What You Can Do with Dual Servers
+
+**Ancestry Server:**
+- Search genealogy databases
+- Extract family relationships
+- Get historical records
+- Generate narratives
+
+**Playwright Server:**
+- Navigate any website
+- Fill forms automatically
+- Take screenshots
+- Extract data from complex pages
+- Handle JavaScript-heavy sites
+
+**Combined:**
+- Research on Ancestry, verify on other genealogy sites
+- Extract data from record images
+- Build comprehensive family histories
+- Automate repetitive research tasks
+
+📖 **See [CLAUDE_CODE_SETUP.md](CLAUDE_CODE_SETUP.md) for complete details**
+
+---
+
+## Claude Desktop Setup
+
+### Prerequisites
+
+- Node.js 18+ installed
+- Active Ancestry.com subscription
+- Claude Desktop app
+
+### Setup Steps
 
 ### 1. Install Dependencies
 
 ```bash
-cd ancestry-mcp-server
+cd local-mcp-server-ancestry
 npm install
 ```
 
@@ -147,5 +263,14 @@ npx playwright install --force chromium
 - Family tree exploration can be slow - be patient
 - Historical narratives are templates - enhance with web search
 - Save interesting findings as you work
+
+## Upgrading to Dual Server Setup
+
+Already using Claude Desktop? Upgrade to Claude Code CLI for dual server support:
+
+1. Install Claude Code CLI
+2. Follow [CLAUDE_CODE_SETUP.md](CLAUDE_CODE_SETUP.md)
+3. Migrate your Ancestry credentials to the MCP config
+4. Get access to both Ancestry + Playwright tools!
 
 Happy researching! 🌳
