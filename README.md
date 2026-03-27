@@ -12,6 +12,23 @@ A Model Context Protocol (MCP) server for exploring genealogy data on Ancestry.c
 - **Timeline Extraction**: Get chronological life events
 - **Narrative Generation**: Create historical narratives with contextual information
 
+## New: Dual MCP Server Setup with Claude Code
+
+**🎯 Recommended Setup**: Use this server alongside Microsoft's Playwright MCP server for powerful combined capabilities!
+
+Claude Code can orchestrate both:
+- **This Ancestry server** for genealogy-specific tools
+- **Playwright MCP server** for general browser automation
+
+See **[CLAUDE_CODE_SETUP.md](CLAUDE_CODE_SETUP.md)** for the complete dual-server configuration guide.
+
+### Quick Dual Setup
+
+1. Install this server: `npm install`
+2. Copy `mcp-config-example.json` and configure with your Ancestry credentials
+3. Place config at `~/.config/claude-code/mcp.json`
+4. Start Claude Code CLI - both servers will be available!
+
 ## Installation
 
 ```bash
@@ -19,6 +36,10 @@ npm install
 ```
 
 ## Configuration
+
+### For Claude Code CLI (Recommended)
+
+See **[CLAUDE_CODE_SETUP.md](CLAUDE_CODE_SETUP.md)** for complete instructions on setting up both Ancestry and Playwright MCP servers.
 
 ### For Claude Desktop
 

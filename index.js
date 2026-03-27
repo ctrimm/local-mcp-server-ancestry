@@ -235,14 +235,31 @@ class AncestryMCPServer {
 
   async initBrowser() {
     if (!this.browser) {
+      console.error('[DEBUG] Launching browser...');
       this.browser = await chromium.launch({
         headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'] // More compatible
       });
       this.context = await this.browser.newContext({
         viewport: { width: 1920, height: 1080 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       });
       this.page = await this.context.newPage();
+
+      // Add console log handler to see browser console messages
+      this.page.on('console', msg => {
+        const type = msg.type();
+        if (type === 'error' || type === 'warning') {
+          console.error(`[BROWSER ${type.toUpperCase()}]`, msg.text());
+        }
+      });
+
+      // Add page error handler
+      this.page.on('pageerror', error => {
+        console.error('[BROWSER PAGE ERROR]', error.message);
+      });
+
+      console.error('[DEBUG] Browser launched successfully');
     }
   }
 
@@ -255,20 +272,34 @@ class AncestryMCPServer {
 
     try {
       await this.page.goto('https://www.ancestry.com/account/signin', {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
+        timeout: 60000, // 60 second timeout
       });
+
+      // Wait for login form to be ready
+      await this.page.waitForSelector('input[name="username"]', { timeout: 10000 });
 
       // Fill in login form
       await this.page.fill('input[name="username"]', this.username);
       await this.page.fill('input[name="password"]', this.password);
-      
+
       // Click sign in
       await this.page.click('button[type="submit"]');
-      
-      // Wait for navigation
-      await this.page.waitForLoadState('networkidle');
+
+      // Wait for navigation with longer timeout
+      await this.page.waitForLoadState('domcontentloaded', { timeout: 60000 });
+
+      // Verify we're logged in by checking for user-specific elements
+      const currentUrl = this.page.url();
+      console.error(`[DEBUG] After login, URL is: ${currentUrl}`);
+
+      // Check if we're actually logged in (not still on signin page)
+      if (currentUrl.includes('signin') || currentUrl.includes('login')) {
+        throw new Error('Login appears to have failed - still on signin page');
+      }
 
       this.isLoggedIn = true;
+      console.error(`[DEBUG] Login successful!`);
 
       return {
         content: [
@@ -289,52 +320,301 @@ class AncestryMCPServer {
     const { firstName, lastName, birthYear, deathYear, location } = args;
 
     try {
-      // Go to search page
-      await this.page.goto('https://www.ancestry.com/search/', {
-        waitUntil: 'networkidle',
+      console.error(`[DEBUG] Starting search - logged in status: ${this.isLoggedIn}`);
+
+      // Go to advanced search page
+      console.error(`[DEBUG] Navigating to advanced search page...`);
+      await this.page.goto('https://www.ancestry.com/search/?searchMode=advanced&searchOrigin=navigation_header', {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000,
       });
 
-      // Fill search form
-      await this.page.fill('input[name="firstname"]', firstName);
-      await this.page.fill('input[name="lastname"]', lastName);
-      
-      if (birthYear) {
-        await this.page.fill('input[name="birth"]', birthYear);
-      }
-      if (deathYear) {
-        await this.page.fill('input[name="death"]', deathYear);
-      }
-      if (location) {
-        await this.page.fill('input[name="location"]', location);
-      }
-
-      // Submit search
-      await this.page.click('button[type="submit"]');
-      await this.page.waitForLoadState('networkidle');
-
-      // Extract search results
-      const results = await this.page.evaluate(() => {
-        const resultElements = document.querySelectorAll('.searchResult');
-        return Array.from(resultElements).slice(0, 10).map(el => {
-          const nameEl = el.querySelector('.name');
-          const birthEl = el.querySelector('.birth');
-          const deathEl = el.querySelector('.death');
-          const linkEl = el.querySelector('a');
-          
-          return {
-            name: nameEl?.textContent?.trim() || '',
-            birth: birthEl?.textContent?.trim() || '',
-            death: deathEl?.textContent?.trim() || '',
-            url: linkEl?.href || '',
-          };
+      // Verify we're still logged in (check for sign in button)
+      const signInButton = await this.page.$('a:has-text("Sign In")');
+      if (signInButton) {
+        console.error(`[WARNING] Found 'Sign In' button - may not be logged in!`);
+        // Try to login again
+        this.isLoggedIn = false;
+        await this.ensureLoggedIn();
+        // Navigate back to search page
+        await this.page.goto('https://www.ancestry.com/search/?searchMode=advanced&searchOrigin=navigation_header', {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000,
         });
+      }
+
+      // Fill search form with correct selectors
+      console.error(`[DEBUG] Filling first name: ${firstName}`);
+      await this.page.fill('input[name="txtfirstname"]', firstName);
+
+      console.error(`[DEBUG] Filling last name: ${lastName}`);
+      await this.page.fill('input[name="sfsLastNameExactModule"]', lastName);
+
+      if (birthYear) {
+        console.error(`[DEBUG] Filling birth year: ${birthYear}`);
+        await this.page.fill('#sfs_EstBirthYearExact', birthYear);
+      }
+
+      if (location) {
+        console.error(`[DEBUG] Filling location: ${location}`);
+        await this.page.fill('input[aria-label="Place your ancestor might have lived"]', location);
+      }
+
+      // Note: Death year will be used in modal dialog filtering, not in initial form
+      // This simplifies the search process and avoids timeout issues
+
+      // Submit search by pressing Enter
+      console.error(`[DEBUG] Submitting search with Enter key...`);
+      await this.page.keyboard.press('Enter');
+
+      // Handle the "Improve your results" modal dialog
+      try {
+        // Wait for modal to appear (timeout after 5 seconds if it doesn't)
+        await this.page.waitForSelector('dialog', { timeout: 5000 });
+        console.error(`[DEBUG] Modal dialog appeared, handling it...`);
+
+        // Step 1: Location - fill if provided, otherwise skip
+        if (location) {
+          console.error(`[DEBUG] Filling location in modal: ${location}`);
+          const locationInput = await this.page.$('dialog input[placeholder*="Country"], dialog combobox');
+          if (locationInput) {
+            await locationInput.fill(location);
+            await this.page.waitForTimeout(300);
+          }
+          const continueButton = await this.page.$('dialog button:has-text("Continue")');
+          if (continueButton) await continueButton.click();
+        } else {
+          const step1Button = await this.page.$('button:has-text("I don\'t know")');
+          if (step1Button) {
+            console.error(`[DEBUG] Clicking 'I don't know' for step 1...`);
+            await step1Button.click();
+          }
+        }
+        await this.page.waitForTimeout(500);
+
+        // Step 2: Birth year - fill if provided, otherwise skip
+        if (birthYear) {
+          console.error(`[DEBUG] Filling birth year in modal: ${birthYear}`);
+          const birthInput = await this.page.$('dialog input[placeholder*="1920"]');
+          if (birthInput) {
+            await birthInput.fill(birthYear);
+            await this.page.waitForTimeout(300);
+          }
+          const continueButton = await this.page.$('dialog button:has-text("Continue")');
+          if (continueButton) await continueButton.click();
+        } else {
+          const step2Button = await this.page.$('button:has-text("I don\'t know")');
+          if (step2Button) {
+            console.error(`[DEBUG] Clicking 'I don't know' for step 2...`);
+            await step2Button.click();
+          }
+        }
+        await this.page.waitForTimeout(500);
+
+        // Step 3: Relatives - just click "Search" to finish
+        const searchButton = await this.page.$('dialog button:has-text("Search")');
+        if (searchButton) {
+          console.error(`[DEBUG] Clicking 'Search' to complete modal...`);
+          await searchButton.click();
+        }
+      } catch (error) {
+        console.error(`[DEBUG] No modal dialog appeared or error handling it: ${error.message}`);
+      }
+
+      await this.page.waitForLoadState('domcontentloaded', { timeout: 60000 });
+      console.error(`[DEBUG] Results page loaded, extracting results...`);
+
+      // Debug: Save page content and screenshot
+      const pageContent = await this.page.content();
+      console.error(`[DEBUG] Page URL: ${this.page.url()}`);
+      console.error(`[DEBUG] Page title: ${await this.page.title()}`);
+      console.error(`[DEBUG] Page content length: ${pageContent.length} chars`);
+
+      // Save HTML to file for inspection
+      const fs = require('fs');
+      fs.writeFileSync('/tmp/ancestry-results.html', pageContent);
+      console.error(`[DEBUG] HTML saved to /tmp/ancestry-results.html`);
+
+      // Take a screenshot for debugging
+      await this.page.screenshot({ path: '/tmp/ancestry-results.png', fullPage: true });
+      console.error(`[DEBUG] Screenshot saved to /tmp/ancestry-results.png`);
+
+      // Extract search results with robust multi-selector strategy
+      const results = await this.page.evaluate(() => {
+        const results = [];
+
+        // Strategy: Try multiple selector patterns to find result containers
+        const selectorPatterns = [
+          // Pattern 1: List items with role
+          'li[role="listitem"]',
+          // Pattern 2: Articles (common for search results)
+          'article',
+          // Pattern 3: Divs with data attributes
+          '[data-test*="result"], [data-testid*="result"]',
+          // Pattern 4: Common class patterns
+          '.searchResult, .search-result, .result-item',
+          // Pattern 5: Any element containing record/collection links
+          '*:has(> a[href*="/collections/"])',
+          // Pattern 6: Broad search - divs with links to collections
+          'div:has(a[href*="/collections/"])',
+          // Pattern 7: Very broad - any container with collection links
+          '*:has(a[href*="/collections/"]):not(body):not(html):not(header):not(nav)'
+        ];
+
+        let resultContainers = [];
+        let usedSelector = '';
+
+        // Try each selector until we find results
+        for (const selector of selectorPatterns) {
+          try {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              resultContainers = Array.from(elements);
+              usedSelector = selector;
+              console.log(`[DEBUG] Found ${elements.length} elements with selector: ${selector}`);
+              break;
+            }
+          } catch (e) {
+            console.log(`[DEBUG] Selector failed: ${selector} - ${e.message}`);
+          }
+        }
+
+        console.log(`[DEBUG] Using selector: ${usedSelector}`);
+        console.log(`[DEBUG] Found ${resultContainers.length} containers`);
+
+        // If no containers found, try to analyze page structure
+        if (resultContainers.length === 0) {
+          console.log('[DEBUG] No containers found. Analyzing page structure...');
+
+          // Find all links to collections
+          const collectionLinks = document.querySelectorAll('a[href*="/collections/"]');
+          console.log(`[DEBUG] Found ${collectionLinks.length} collection links`);
+
+          // Get parent elements of collection links as potential containers
+          const parents = new Set();
+          collectionLinks.forEach(link => {
+            let parent = link.parentElement;
+            // Go up a few levels to find the result container
+            for (let i = 0; i < 5 && parent; i++) {
+              parents.add(parent);
+              parent = parent.parentElement;
+            }
+          });
+
+          resultContainers = Array.from(parents).slice(0, 10);
+          console.log(`[DEBUG] Using ${resultContainers.length} parent elements as containers`);
+        }
+
+        // Process up to 10 results
+        for (let i = 0; i < Math.min(resultContainers.length, 10); i++) {
+          const container = resultContainers[i];
+
+          try {
+            // Extract all links from container
+            const links = container.querySelectorAll('a[href*="/collections/"], a[href*="/discoveryui-content/view/"]');
+
+            // Get the main record link (usually first or most prominent)
+            const mainLink = links[0];
+            const collection = mainLink?.textContent?.trim() || '';
+            const url = mainLink?.href || '';
+
+            // Get all text content
+            const textContent = container.textContent || '';
+
+            // Try multiple patterns to extract data
+            // Pattern 1: Label-based (e.g., "Name: John Smith")
+            let nameMatch = textContent.match(/Name[:\s]+([^\n]+)/i);
+            let birthMatch = textContent.match(/Birth[:\s]+([^\n]+)/i);
+            let deathMatch = textContent.match(/Death[:\s]+([^\n]+)/i);
+            let residenceMatch = textContent.match(/Residence[:\s]+([^\n]+)/i);
+
+            // Pattern 2: Line-based extraction (if labels don't work)
+            if (!nameMatch) {
+              const lines = textContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+              // Name is often in first few lines
+              for (const line of lines.slice(0, 5)) {
+                // Look for a line that looks like a name (2-3 words, capitalized)
+                if (/^[A-Z][a-z]+(\s+[A-Z][a-z]*)+$/.test(line) && line.length < 50) {
+                  nameMatch = [null, line];
+                  break;
+                }
+              }
+            }
+
+            // Pattern 3: Look for structured data in nested elements
+            if (!nameMatch) {
+              const headings = container.querySelectorAll('h1, h2, h3, h4, strong, b');
+              for (const heading of headings) {
+                const text = heading.textContent?.trim();
+                if (text && text.length < 50 && text.length > 5 && !text.includes('Collection')) {
+                  nameMatch = [null, text];
+                  break;
+                }
+              }
+            }
+
+            // Look for date patterns (e.g., "23 Dec 1934", "1934-2012")
+            const datePattern = /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}|\d{4})/gi;
+            const dates = textContent.match(datePattern) || [];
+
+            // If we have dates but no birth/death labels, assign first to birth, second to death
+            if (!birthMatch && dates.length > 0) {
+              birthMatch = [null, dates[0]];
+            }
+            if (!deathMatch && dates.length > 1) {
+              deathMatch = [null, dates[1]];
+            }
+
+            // Extract any location information
+            if (!residenceMatch) {
+              const locationPattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z][a-z]+)/g;
+              const locations = textContent.match(locationPattern);
+              if (locations && locations.length > 0) {
+                residenceMatch = [null, locations[0]];
+              }
+            }
+
+            // Only add if we have at least a collection or name
+            if (collection || (nameMatch && nameMatch[1])) {
+              results.push({
+                collection: collection,
+                url: url,
+                name: nameMatch ? nameMatch[1].trim() : '',
+                birth: birthMatch ? birthMatch[1].trim() : '',
+                death: deathMatch ? deathMatch[1].trim() : '',
+                residence: residenceMatch ? residenceMatch[1].trim() : '',
+                _debug_text: textContent.substring(0, 200) // First 200 chars for debugging
+              });
+            }
+          } catch (err) {
+            console.log(`[DEBUG] Error processing container ${i}: ${err.message}`);
+          }
+        }
+
+        console.log(`[DEBUG] Extracted ${results.length} results`);
+        return results;
       });
+
+      console.error(`[DEBUG] Extracted ${results.length} results successfully`);
+
+      // Log first result for debugging
+      if (results.length > 0) {
+        console.error(`[DEBUG] First result sample:`, JSON.stringify(results[0], null, 2));
+      } else {
+        console.error(`[WARNING] No results extracted! Check debug files and page structure.`);
+      }
+
+      // Format response with summary (remove debug text from output)
+      const summary = `Found ${results.length} results for ${firstName} ${lastName}${birthYear ? ` (b. ${birthYear})` : ''}${deathYear ? ` (d. ${deathYear})` : ''}\n\nTop ${results.length} results:\n`;
+      const formattedResults = results.map((r, i) =>
+        `${i + 1}. ${r.name || 'Unknown'}\n   Collection: ${r.collection}\n   Birth: ${r.birth || 'N/A'}\n   Death: ${r.death || 'N/A'}\n   Residence: ${r.residence || 'N/A'}\n   URL: ${r.url}`
+      ).join('\n\n');
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ results, count: results.length }, null, 2),
+            text: summary + formattedResults,
           },
         ],
       };
@@ -347,7 +627,11 @@ class AncestryMCPServer {
     await this.ensureLoggedIn();
 
     try {
-      await this.page.goto(profileUrl, { waitUntil: 'networkidle' });
+      console.error(`[DEBUG] Navigating to profile: ${profileUrl}`);
+      await this.page.goto(profileUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
 
       const details = await this.page.evaluate(() => {
         const data = {
@@ -426,7 +710,11 @@ class AncestryMCPServer {
     await this.ensureLoggedIn();
 
     try {
-      await this.page.goto(treeUrl, { waitUntil: 'networkidle' });
+      console.error(`[DEBUG] Navigating to tree: ${treeUrl}`);
+      await this.page.goto(treeUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
 
       // This would need to be customized based on Ancestry's tree structure
       const treeData = await this.page.evaluate((gens) => {
@@ -466,7 +754,11 @@ class AncestryMCPServer {
     await this.ensureLoggedIn();
 
     try {
-      await this.page.goto(profileUrl, { waitUntil: 'networkidle' });
+      console.error(`[DEBUG] Navigating to profile for records: ${profileUrl}`);
+      await this.page.goto(profileUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
 
       // Navigate to records tab
       const recordsTab = await this.page.$('a[href*="records"]');
@@ -503,7 +795,11 @@ class AncestryMCPServer {
     await this.ensureLoggedIn();
 
     try {
-      await this.page.goto(profileUrl, { waitUntil: 'networkidle' });
+      console.error(`[DEBUG] Navigating to profile for timeline: ${profileUrl}`);
+      await this.page.goto(profileUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
 
       const timeline = await this.page.evaluate(() => {
         const events = [];
